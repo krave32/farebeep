@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+pydantic
+pydantic-settings
+requests
+pytest
+python-dotenv
+python-multipart
+twilio
+apscheduler
+httpx
+# Google Flights integration (fli reverse-engineers Google Flights API)
+flights>=0.1.0
+curl_cffi

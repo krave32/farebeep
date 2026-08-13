@@ -1,0 +1,22 @@
+graph TD
+    A[User WhatsApp] <--> B(360dialog Gateway)
+    B <--> C{FastAPI Backend}
+
+    C --> D[Gemini 1.5 Flash: Intent Parser]
+    D --> C
+
+    C <--> E[(Supabase: Shared Ledger)]
+
+    C --> F[Tiqwa API: Live Fares]
+    F --> E
+
+    C --> G[Aviationstack: ADS-B Status]
+    G --> C
+
+    C --> H[Paystack: Payments]
+    H --> C
+
+    subgraph "Safety Layer"
+    I[10-Minute Timer]
+    J[Volatility Buffer]
+    end

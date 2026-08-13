@@ -1,0 +1,33 @@
+graph TD
+    A[User WhatsApp] <--> B[360dialog Gateway]
+    B <--> C[FastAPI Backend]
+
+    C --> D[Gemini<br/>AI Brain]
+    C <--> E[Supabase<br/>Shared Ledger]
+    C --> F[Tiqwa API<br/>Live Fares]
+    C <--> G[Aviationstack<br/>Flight Status]
+    C <--> H[Paystack<br/>Payments]
+
+    F --> E
+
+    C --> I[10-Minute<br/>Price Lock]
+    C --> J[Volatility<br/>Buffer]
+
+    classDef wa fill:#25d366,stroke:#075e54,color:#fff
+    classDef gate fill:#f59e0b,stroke:#b45309,color:#fff
+    classDef core fill:#6366f1,stroke:#4338ca,color:#fff
+    classDef gem fill:#d946ef,stroke:#a21caf,color:#fff
+    classDef sup fill:#22d3ee,stroke:#0e7490,color:#111
+    classDef tiq fill:#ef4444,stroke:#b91c1c,color:#fff
+    classDef avi fill:#3b82f6,stroke:#1d4ed8,color:#fff
+    classDef pay fill:#0ea5e9,stroke:#0369a1,color:#fff
+    classDef safe fill:#10b981,stroke:#047857,color:#fff
+    class A wa
+    class B gate
+    class C core
+    class D gem
+    class E sup
+    class F tiq
+    class G avi
+    class H pay
+    class I,J safe

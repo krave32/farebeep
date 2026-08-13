@@ -1,0 +1,9 @@
+# FareBeep (v2) - secrets and local artifacts must never reach GitHub
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.db
+*.log
+.venv/
+venv/
