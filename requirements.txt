@@ -1,16 +1,12 @@
 fastapi
-uvicorn
-sqlalchemy
+uvicorn[standard]
+sqlalchemy>=2.0
 psycopg2-binary
 pydantic
-pydantic-settings
-requests
-pytest
 python-dotenv
-python-multipart
+httpx
+requests
 twilio
 apscheduler
-httpx
-# Google Flights integration (fli reverse-engineers Google Flights API)
-flights>=0.1.0
-curl_cffi
+pytest
+python-multipart
