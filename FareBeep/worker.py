@@ -37,7 +37,7 @@ def record_fx_rate(db=None) -> Optional[float]:
 
     The row history is the founder's view of naira movement - the 'price
     tracking' half of the FX strategy; ngn_per_usd() uses the live rate."""
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     from FareBeep.config import FX_RATE_TTL_HOURS
     from FareBeep.models import FxRate
@@ -47,15 +47,19 @@ def record_fx_rate(db=None) -> Optional[float]:
     try:
         latest = db.query(FxRate) \
             .order_by(FxRate.fetched_at.desc()).first()
-        if latest is not None and \
-                latest.fetched_at > datetime.utcnow() - timedelta(hours=FX_RATE_TTL_HOURS):
-            return None
+        if latest is not None:
+            fetched = latest.fetched_at
+            if fetched.tzinfo is None:      # SQLite stores naive
+                fetched = fetched.replace(tzinfo=timezone.utc)
+            if fetched > datetime.now(timezone.utc) - \
+                    timedelta(hours=FX_RATE_TTL_HOURS):
+                return None
         rate = fetch_usd_ngn()
         if rate is None:
             logger.warning("FX snapshot skipped: rate API unavailable")
             return None
         db.add(FxRate(usd_ngn=rate, source="open.er-api.com",
-                      fetched_at=datetime.utcnow()))
+                      fetched_at=datetime.now(timezone.utc)))
         db.commit()
         logger.info("FX snapshot recorded: USD->NGN %s", rate)
         return rate

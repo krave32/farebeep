@@ -29,7 +29,8 @@ Base = declarative_base()
 
 
 def utcnow() -> datetime:
-    """Naive-UTC timestamp for storage (matches Postgres timestamptz)."""
+    """Naive-UTC timestamp for storage (matches Postgres timestamptz when
+    the server session timezone is UTC, and survives SQLite round-trips)."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
