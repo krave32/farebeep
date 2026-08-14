@@ -251,8 +251,9 @@ def probe_contract(contract: Contract, request: Callable[[], Any]) -> dict:
         return {"contract": contract.name, "version": contract.version,
                 "ok": False, "missing": [], "coerced": [], "error": str(e)}
     _, drift = contract.parse(data)
-    required_missing = [f for f in drift["missing"]
-                        if contract.spec.get(f, {}).get("required")]
+    required_paths = {opts["path"] for opts in contract.spec.values()
+                      if opts.get("required")}
+    required_missing = [p for p in drift["missing"] if p in required_paths]
     return {"contract": contract.name, "version": contract.version,
             "ok": not required_missing,
             "missing": drift["missing"], "coerced": drift["coerced"]}
@@ -319,7 +320,12 @@ def tiqwa_probe() -> Optional[dict]:
     integration (FareBeep/tiqwa.py implements a search call to probe)."""
     if not _tiqwa_ready():
         return None
-    from FareBeep.tiqwa import TiqwaFlights  # noqa: F401
+    try:
+        from FareBeep.tiqwa import TiqwaFlights  # noqa: F401
+    except ImportError:
+        return {"contract": "tiqwa_flight", "version": "v1",
+                "ok": False,
+                "error": "tiqwa credentials set but FareBeep/tiqwa.py missing"}
     return {"contract": "tiqwa_flight", "version": "v1",
             "ok": False, "error": "tiqwa probe: implement a live search call"}
 

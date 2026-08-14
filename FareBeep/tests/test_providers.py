@@ -52,7 +52,7 @@ def test_contract_parse_returns_result_and_drift():
         "fare", "v1",
         {"price": {"path": "price", "coerce": providers._as_float, "default": None},
          "airline": {"path": "airline", "coerce": providers._as_str, "default": "Unknown"}})
-    result, drift = contract.parse({"price": "80k" and 80000, "airline": "Air Peace"})
+    result, drift = contract.parse({"price": 80000, "airline": "Air Peace"})
     assert result["price"] == 80000.0
     assert drift == {"missing": [], "coerced": []}
 
@@ -74,6 +74,19 @@ def test_probe_ok_when_contract_matches():
                    "default": None, "required": True}})
     ok = probe_contract(contract, lambda: {"price": 50000})
     assert ok["ok"] is True
+
+
+def test_probe_flags_required_drift_on_nested_path():
+    """Regression: a required field at a NESTED path must still trip the
+    probe (the old lookup compared field names against paths and silently
+    missed nested drift)."""
+    contract = Contract(
+        "fare", "v1",
+        {"price": {"path": "data.offers.0.price", "coerce": providers._as_float,
+                   "default": None, "required": True}})
+    ok = probe_contract(contract, lambda: {"data": {"offers": [{"total_price": 9}]}})
+    assert ok["ok"] is False
+    assert "data.offers.0.price" in ok["missing"]
 
 
 def test_probe_reports_call_failure():
