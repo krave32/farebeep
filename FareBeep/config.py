@@ -99,6 +99,22 @@ PAYSTACK_CALLBACK_URL = _get("PAYSTACK_CALLBACK_URL")
 # --- Aviationstack ---
 AVIATIONSTACK_API_KEY = _get("AVIATIONSTACK_API_KEY")
 
+# --- HTTP resilience (the defensive integration layer, providers.py) ---
+HTTP_TIMEOUT = _get_float("HTTP_TIMEOUT", 20.0)
+HTTP_MAX_RETRIES = _get_int("HTTP_MAX_RETRIES", 3)
+
+# --- Fare source provider (providers.get_live_engine) ---
+# "serpapi" = the pitch-deck/demo source (Google Flights via SerpApi).
+# "tiqwa"  = the production consolidator engine (FareBeep/tiqwa.py). The
+#            client ships once the Tiqwa API token + contract are available.
+FARE_PROVIDER = _get("FARE_PROVIDER", "serpapi")
+TIQWA_API_KEY = _get("TIQWA_API_KEY")
+TIQWA_ENV = _get("TIQWA_ENV", "sandbox")
+TIQWA_BASE_URL = _get(
+    "TIQWA_BASE_URL",
+    "https://sandbox.tiqwa.com/v1/flight" if TIQWA_ENV == "sandbox"
+    else "https://prod.tiqwa.com/v1/flight")
+
 # --- Business rules ---
 MARKUP_NAIRA = _get_float("MARKUP_NAIRA", 3000.0)
 PROCESSING_FEE_RATE = _get_float("PROCESSING_FEE_RATE", 0.015)

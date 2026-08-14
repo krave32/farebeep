@@ -563,7 +563,15 @@ async def paystack_webhook(request: Request):
 # ---------------------------------------------------------------------------
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "FareBeep"}
+    # Vendor contract drift probe: when the fare source's payload changes a
+    # pinned field name, `providers.probe_contract` reports it here so churn
+    # shows up as a health signal before users see a broken quote.
+    from FareBeep import providers
+    probe = providers.tiqwa_probe()
+    if probe is None:
+        return {"status": "ok", "service": "FareBeep"}
+    return {"status": "ok" if probe["ok"] else "degraded",
+            "service": "FareBeep", "fare_provider_probe": probe}
 
 
 # ---------------------------------------------------------------------------
