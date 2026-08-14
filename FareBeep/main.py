@@ -23,7 +23,7 @@ import logging
 import os
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from FareBeep import brain
 from FareBeep.config import (MESSAGING_PROVIDER, META_APP_SECRET,
@@ -560,3 +560,40 @@ async def paystack_webhook(request: Request):
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "FareBeep"}
+
+
+# ---------------------------------------------------------------------------
+# Payment status page - where Paystack sends the user after checkout
+# (PAYSTACK_CALLBACK_URL). The actual settlement happens in the webhook;
+# this page is just a friendly confirmation screen.
+# ---------------------------------------------------------------------------
+@app.get("/payment/status")
+def payment_status(reference: str = ""):
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FareBeep - Payment</title>
+<style>
+  body {{ font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+         background: #0b1220; color: #e8eef7; display: grid; place-items: center;
+         min-height: 100vh; margin: 0; }}
+  .card {{ background: #131c2e; border: 1px solid #26324a; border-radius: 16px;
+          padding: 2.5rem; max-width: 26rem; text-align: center; }}
+  .check {{ font-size: 3rem; }}
+  h1 {{ font-size: 1.25rem; margin: 0.75rem 0 0.5rem; }}
+  p {{ color: #9fb0c9; margin: 0.25rem 0; line-height: 1.5; }}
+  .ref {{ color: #64748b; font-size: 0.85rem; margin-top: 1rem; }}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="check">✅</div>
+  <h1>Payment received</h1>
+  <p>Your booking is being confirmed.<br>We&#39;ll send your ticket and PNR to your WhatsApp shortly.</p>
+  <p class="ref">Reference: {reference or "—"}</p>
+</div>
+</body>
+</html>"""
+    return HTMLResponse(html)

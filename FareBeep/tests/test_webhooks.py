@@ -99,3 +99,10 @@ def test_paystack_webhook_rejects_bad_signature(client):
 
 def test_health(client):
     assert client.get("/health").json()["status"] == "ok"
+
+
+def test_payment_status_page(client):
+    r = client.get("/payment/status", params={"reference": "FB-ABC123"})
+    assert r.status_code == 200
+    assert "Payment received" in r.text
+    assert "FB-ABC123" in r.text
