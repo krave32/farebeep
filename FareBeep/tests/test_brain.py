@@ -179,6 +179,120 @@ def test_local_parser_extracts_user_name():
     assert intent.destination_iata == "ABV"
 
 
+def test_local_parser_i_am_name_not_a_verb():
+    """'I'm Tunde' captures the name; 'I'm going to Abuja' must NOT."""
+    intent = brain._local_parse("I'm Tunde")
+    assert intent.name == "Tunde"
+    intent = brain._local_parse("i am going to abuja tomorrow")
+    assert intent.name is None
+    assert intent.intent == "fare"
+    assert intent.destination_iata == "ABV"
+
+
+# ---------------------------------------------------------------------------
+# SENTENCE UNDERSTANDING - the parser must read sentences, not just keywords
+# ---------------------------------------------------------------------------
+
+def test_sentence_booking_status_is_status_not_book():
+    """'check my booking' is about an EXISTING booking - status, never book."""
+    for msg in ("check my booking", "what is the status of my booking",
+                "track my booking", "my booking status please"):
+        intent = brain._local_parse(msg)
+        assert intent.intent == "status", msg
+
+
+def test_sentence_bare_status_and_flight_phrases():
+    for msg in ("status", "where is my flight", "when is my flight",
+                "is my flight on time", "flight status", "track my flight",
+                "when is my flight to Abuja"):
+        intent = brain._local_parse(msg)
+        assert intent.intent == "status", msg
+
+
+def test_sentence_price_question_is_fare_not_status():
+    """'how much is my flight' asks a PRICE question - fare, not status."""
+    intent = brain._local_parse("how much is my flight to Abuja")
+    assert intent.intent == "fare"
+    assert intent.destination_iata == "ABV"
+
+
+def test_sentence_price_query_without_route_verbs():
+    """'Lagos Abuja price' has no to/from/fly - must still be a fare."""
+    intent = brain._local_parse("Lagos Abuja price")
+    assert intent.intent == "fare"
+    assert intent.origin_iata == "LOS"
+    assert intent.destination_iata == "ABV"
+    intent = brain._local_parse("what's the cost from Lagos to Abuja on Friday")
+    assert intent.intent == "fare"
+
+
+def test_sentence_subscribe_phrasing():
+    """'I want to be notified when it drops below 100k' - subscribe."""
+    for msg in ("notify me when lagos to abuja drops below 100k",
+                "i want to be notified when it drops below 100k",
+                "let me know when lagos abuja goes below 60k",
+                "alert me at 15000 for lagos abuja"):
+        intent = brain._local_parse(msg)
+        assert intent.intent == "subscribe", msg
+    intent = brain._local_parse("notify me when lagos to abuja drops below 100k")
+    assert intent.target_price == 100000.0
+
+
+def test_sentence_track_route_is_subscribe_track_flight_is_status():
+    intent = brain._local_parse("track lagos to abuja")
+    assert intent.intent == "subscribe"
+    assert intent.origin_iata == "LOS"
+    assert intent.destination_iata == "ABV"
+    intent = brain._local_parse("track P47123")
+    assert intent.intent == "status"
+    assert intent.flight == "P47123"
+
+
+def test_sentence_small_bare_number_is_a_date_not_a_price():
+    """'track lagos to abuja 5' means the 5th - target_price must stay null."""
+    intent = brain._local_parse("track lagos to abuja 5")
+    assert intent.intent == "subscribe"
+    assert intent.target_price is None
+    assert intent.date is not None
+
+
+def test_sentence_unsubscribe_phrasing():
+    for msg in ("I don't want alerts anymore", "no more alerts please",
+                "opt out", "cancel my alerts", "turn off alerts",
+                "remove my alerts", "stop", "don't text me anymore"):
+        intent = brain._local_parse(msg)
+        assert intent.intent == "unsubscribe", msg
+
+
+def test_sentence_book_pay_for_booking():
+    """'I want to pay for my booking' is the buy action - book."""
+    intent = brain._local_parse("I want to pay for my booking")
+    assert intent.intent == "book"
+
+
+def test_sentence_casual_chat_is_help():
+    for msg in ("thanks", "ok", "good morning", "what can you do",
+                "hello there", "i'll think about it"):
+        intent = brain._local_parse(msg)
+        assert intent.intent == "help", msg
+
+
+def test_sentence_destination_only_with_price_word():
+    """'cheapest flight to Abuja next tuesday' = fare, destination + date."""
+    intent = brain._local_parse("cheapest flight to Abuja next tuesday")
+    assert intent.intent == "fare"
+    assert intent.destination_iata == "ABV"
+    assert intent.date is not None
+
+
+def test_prompt_defines_fare_and_decision_order():
+    """The prompt must TEACH the model what 'fare' means and how to
+    disambiguate - the old prompt never defined 'fare' at all."""
+    assert '"fare" = asks the PRICE' in brain.SYSTEM_PROMPT
+    assert "unsubscribe > status > subscribe >" in brain.SYSTEM_PROMPT
+    assert "Examples - match the pattern" in brain.SYSTEM_PROMPT
+
+
 def test_local_parser_weekday_date_next_tuesday():
     from datetime import date, timedelta
     intent = brain._local_parse("find me a flight to abj for next tuesday")

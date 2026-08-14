@@ -151,7 +151,11 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                 elif intent.is_partial:
                     _ask_missing_info(user, intent)
                 else:
-                    _say(user.phone, _help_text(), user.name)
+                    _say(user.phone,
+                         "To book: send your route, e.g. 'BOOK Lagos to "
+                         "Abuja tomorrow' - or just say BOOK right after a "
+                         "fare quote I sent you.",
+                         user.name)
             elif intent.intent == "subscribe":
                 _reply_subscribe(db, user, intent)
             elif intent.intent == "unsubscribe":

@@ -44,25 +44,61 @@ Fields (ALL required; use null when unknown):
 - "name": the user's name ONLY if they introduce themselves ("my name is
   Damilola", "I'm Tunde", "call me Bola"), as written, else null
 
-Rules:
+WHAT EACH INTENT MEANS - apply these definitions first:
+- "fare" = asks the PRICE or availability of a route ("how much from Lagos to
+  Abuja", "cheapest flight to Enugu", "Lagos Abuja tomorrow", "is there a
+  flight to Abuja on Friday"). Route is optional - a bare destination with a
+  date is still "fare".
+- "book" = wants to BUY or reserve or pay ("book a flight", "BOOK", "book
+  P47123", "I want to pay for my booking", "reserve it").
+- "status" = asks about an EXISTING booking or flight: "my booking", "check
+  my booking", "flight status", "where is my flight", "when is my flight",
+  "is my flight on time", "track my booking", "track my flight", or a flight
+  number with track/status ("track P47123", "status of P47123").
+- "subscribe" = wants a price-drop ALERT on a route ("track Lagos to Abuja",
+  "alert me when it drops below 80000", "notify me", "watch Abuja to Enugu",
+  "beep me", "subscribe LOS ABV 60000"). Include "target_price" if they name
+  one; extract the date too if given.
+- "unsubscribe" = wants alerts STOPPED ("unsubscribe", "stop alerts", "I
+  don't want alerts anymore", "no more alerts", "opt out", "cancel my
+  alerts", "stop" alone).
+- "help" = greeting, small talk, thanks, "ok", "good", or anything
+  unrelated to flights.
+
+RULES:
 - PASS 1 IS EXTRACTION ONLY: origin and destination are independent. NEVER
   invent one from the other. "I'm going to Lagos" -> destination "Lagos",
   origin null, date null. Record city names as WRITTEN, no IATA codes.
-- Today's date is {{today}}. Resolve "tomorrow", "next week", "next tuesday",
-  "in August" against it.
-- "track"/"status" = user gave a flight number or wants flight status/the
-  departure time of their booking. Include the flight number in "flight"
-  (e.g. "P47123") if present.
-- "book" = user wants to proceed/buy after seeing a fare. Include the
-  flight number in "flight" if one is given (e.g. "book P47123").
-- "subscribe" = user wants price-drop alerts for a route ("subscribe LOS ABV",
-  "alert me when Lagos to Abuja drops below 80000", "watch Abuja to Enugu",
-  "track lagos to abuja").
-- "unsubscribe" = user wants to stop alerts ("unsubscribe", "stop alerts",
-  "remove my alerts", "unsubscribe LOS ABV").
-- "help" = greeting, "help", or unrelated chat.
+- DECISION ORDER when several match: unsubscribe > status > subscribe >
+  book > fare > help. "Check my booking" is status, NEVER book.
+- "track" is ambiguous - resolve by CONTEXT: with a flight number -> status;
+  with a route -> subscribe; with "booking"/"flight" and no route -> status.
+- "booking" as a NOUN ("my booking") = existing booking -> status. "book"
+  as a VERB = the buy action -> book.
+- "how much" / price questions are fare UNLESS the user wants to be alerted
+  ("notify me", "alert me", "let me know when") -> then subscribe.
+- Today's date is {{today}}. Resolve "tomorrow", "next week", "next
+  tuesday", "in August" against it.
 - CONCISE: output ONLY the JSON object. No preamble, no prose, no markdown
-  fences. Nothing else."""
+  fences. Nothing else.
+
+Examples - match the pattern, not the words:
+User: "how much is Lagos to Abuja tomorrow"
+  -> {"intent":"fare","origin":"Lagos","destination":"Abuja","date":"<resolved>","target_price":null,"flight":null,"name":null}
+User: "check my booking"
+  -> {"intent":"status","origin":null,"destination":null,"date":null,"target_price":null,"flight":null,"name":null}
+User: "track P47123"
+  -> {"intent":"status","origin":null,"destination":null,"date":null,"target_price":null,"flight":"P47123","name":null}
+User: "alert me when Lagos to Abuja drops below 80000"
+  -> {"intent":"subscribe","origin":"Lagos","destination":"Abuja","date":null,"target_price":80000,"flight":null,"name":null}
+User: "I don't want alerts anymore"
+  -> {"intent":"unsubscribe","origin":null,"destination":null,"date":null,"target_price":null,"flight":null,"name":null}
+User: "BOOK"
+  -> {"intent":"book","origin":null,"destination":null,"date":null,"target_price":null,"flight":null,"name":null}
+User: "I'm Tunde"
+  -> {"intent":"help","origin":null,"destination":null,"date":null,"target_price":null,"flight":null,"name":"Tunde"}
+User: "thanks"
+  -> {"intent":"help","origin":null,"destination":null,"date":null,"target_price":null,"flight":null,"name":null}"""
 
 
 @dataclass
@@ -233,24 +269,75 @@ _WEEKDAYS = {name: i for i, name in enumerate(
      "sunday"])}
 
 _FLIGHT_RE = re.compile(r"\b[a-z]{1,2}\d{3,5}\b")
+# Price is unambiguous only after a threshold word (below/under/less/max),
+# with a naira sign/word, as "80k", or as a LARGE bare number (>=1000) -
+# small bare numbers are dates, never prices.
 _PRICE_RE = re.compile(
     r"(?:below|under|less than|max)\s*(?:ngn|n)?\s*([\d,]+(?:\.\d+)?)k?"
+    r"|(?:ngn|\u20a6)\s*([\d,]+(?:\.\d+)?)"
     r"|([\d,]+)(?:\.\d+)?\s*k\b"
-    r"|(?:^|\s)([\d,]+(?:\.\d+)?)(?:\s|$)", re.IGNORECASE)
+    r"|([\d,]+(?:\.\d+)?)\s*naira\b"
+    r"|(?:^|\s)([\d,]+)(?:\s|$)", re.IGNORECASE)
 
 _NAME_RE = re.compile(
-    r"\b(?:my name is|i\x27?m called|i am called|call me)\s+([a-z]{2,})\b",
-    re.IGNORECASE)
+    r"\b(?:my name is|i\x27?m called|i am called|call me)\s+([a-z]{2,})\b"
+    r"|\bi\x27?m\s+(?!going\b|from\b|to\b|in\b|at\b|on\b|here\b|back\b|"
+    r"coming\b|flying\b|travell?ing\b|leaving\b|arriving\b|looking\b|"
+    r"hoping\b|planning\b|trying\b|sorry\b|happy\b|new\b|not\b|just\b)"
+    r"([a-z]{2,})\b"
+    r"|\bi am\s+(?!going\b|from\b|to\b|in\b|at\b|on\b|here\b|back\b|"
+    r"coming\b|flying\b|travell?ing\b|leaving\b|arriving\b|looking\b|"
+    r"hoping\b|planning\b|trying\b|sorry\b|happy\b|new\b|not\b|just\b)"
+    r"([a-z]{2,})\b")
 
 _WEEKDAY_RE = re.compile(
     r"\b((?:next|this|coming)\s+)?"
     r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b")
 
+# Phrases about an EXISTING booking/flight -> status (checked before book).
+_STATUS_RE = re.compile(
+    r"\b(my booking|booking status|bookings?\b.*\bstatus|flight status|"
+    r"status of|status\b|track my|tracking my|where is my flight|"
+    r"when is my flight|what time is my flight|is my flight|"
+    r"my flight|my booking)\b", re.IGNORECASE)
+
+# An explicit buy verb governing the booking ("pay for my booking",
+# "book my booking") is the BUY action -> book, not status.
+_PAY_BOOKING_RE = re.compile(
+    r"\b(pay|book|buy|reserve|proceed)\b[^.]{0,20}\bmy booking\b",
+    re.IGNORECASE)
+
+# Asking for a PRICE (fare beats status/book on these words).
+_PRICE_WORD_RE = re.compile(
+    r"\b(price|prices|fare|fares|cost|how much|cheap|cheapest|ticket|"
+    r"tickets|quote|rate|available|availability)\b", re.IGNORECASE)
+
+_UNSUBSCRIBE_RE = re.compile(
+    r"\b(unsubscribe|stop alerts?|stop notifications|no more alerts?|"
+    r"cancel (my )?alerts?|remove (my )?alerts?|turn off alerts?|"
+    r"off alerts?|opt out|i don\x27?t want alerts?|i do not want alerts?|"
+    r"don\x27?t text me)\b", re.IGNORECASE)
+
+_SUBSCRIBE_RE = re.compile(
+    r"\b(subscribe|alert|watch|beep|track|notif\w*|let me know when)\b",
+    re.IGNORECASE)
+
+_BOOK_RE = re.compile(r"\b(book|buy|reserve|pay|proceed)\b", re.IGNORECASE)
+
+_GREETING_RE = re.compile(
+    r"\b(hello|hi|hey|good (morning|afternoon|evening)|help|menu|options|"
+    r"what can you do|start|thanks|thank you|ok|okay|"
+    r"i\x27?ll think|i will think|let me think|get back to you|maybe)\b",
+    re.IGNORECASE)
+
 
 def _local_name(text: str) -> Optional[str]:
-    """"My name is Damilola" / "call me Bola" -> "Damilola"."""
+    """"My name is Damilola" / "call me Bola" / "I'm Tunde" -> "Tunde"."""
     m = _NAME_RE.search(text)
-    return m.group(1).capitalize() if m else None
+    if not m:
+        return None
+    name = next((g for g in m.groups() if g), None)
+    return name.capitalize() if name else None
 
 
 def _local_route(text: str) -> Optional[list]:
@@ -373,35 +460,63 @@ def _local_target_price(text: str) -> Optional[float]:
     m = _PRICE_RE.search(text)
     if not m:
         return None
-    raw = m.group(1) or m.group(2) or m.group(3)
+    raw = m.group(1) or m.group(2) or m.group(3) or m.group(4) or m.group(5)
+    if not raw:
+        return None
     try:
         price = float(raw.replace(",", ""))
     except ValueError:
         return None
-    if "k" in m.group(0).lower():
-        price *= 1000.0  # "below 80k" -> 80000
+    if m.group(3) is not None or "k" in m.group(0).lower():
+        price *= 1000.0  # "below 80k" / "80k" -> 80000
+    if m.group(5) is not None and price < 1000.0:
+        return None      # a bare small number is a date ("the 5th"), not a price
     return price
 
 
 def _local_parse(text: str) -> Optional[Intent]:
-    """Deterministic intent extraction for offline/fallback operation."""
+    """Deterministic intent extraction for offline/fallback operation.
+
+    Decision order: unsubscribe > status > subscribe > book > fare > help.
+    Mirrors the Gemini prompt's rules so online/offline never disagree.
+    """
     flat = " ".join(text.strip().lower().split())
     if not flat:
         return None
 
-    if re.search(r"\b(unsubscribe|stop alerts|remove my alerts|off alerts)\b", flat):
+    if _UNSUBSCRIBE_RE.search(flat) \
+            or re.fullmatch(r"stop( it| everything)?", flat):
         return Intent(intent="unsubscribe", raw_text=text)
 
     fm = _FLIGHT_RE.search(flat)
     flight = fm.group(0).upper() if fm else None
-    if flight and re.search(r"\b(track|status)\b", flat):
-        return Intent(intent="status", flight=flight, raw_text=text)
 
     route = _local_route(flat)
     day = _local_date(flat)
     name = _local_name(flat)
 
-    if re.search(r"\b(book|buy|reserve|pay|proceed)\b", flat):
+    # STATUS: an existing booking/flight - "check my booking", "where is my
+    # flight", "track my booking", "track P47123", bare "status". Price
+    # questions ("how much is my flight") are fare, not status.
+    if (flight and re.search(r"\b(track|status)\b", flat)) or (
+            _STATUS_RE.search(flat) and not _PRICE_WORD_RE.search(flat)) \
+            and not _PAY_BOOKING_RE.search(flat):
+        return Intent(intent="status", flight=flight, raw_text=text)
+
+    target = _local_target_price(flat)
+    if _SUBSCRIBE_RE.search(flat) and (len(route or []) >= 2
+                                       or target is not None
+                                       or re.fullmatch(
+                                           r"(subscribe|alert|watch|beep|track|notify)( it)?",
+                                           flat)):
+        # bare "TRACK" / "beep" after a fare quote -> subscribe intent;
+        # Pass 2 (main.py) fills the route from the user's last fare search.
+        return Intent(intent="subscribe",
+                      origin=route[0] if route else None,
+                      destination=route[1] if len(route or []) > 1 else None,
+                      date=day, target_price=target, name=name, raw_text=text)
+
+    if _BOOK_RE.search(flat):
         # "BOOK" alone, "book lagos to abuja tomorrow" - the route and date
         # are optional here: Pass 2 (main.py) fills them from the user's
         # last fare search when the user just says BOOK after a quote.
@@ -410,29 +525,20 @@ def _local_parse(text: str) -> Optional[Intent]:
                       destination=route[1] if len(route or []) > 1 else None,
                       date=day, flight=flight, name=name, raw_text=text)
 
-    target = _local_target_price(flat)
-    if re.search(r"\b(subscribe|alert|watch|beep|track)\b", flat) \
-            and (len(route or []) >= 2 or target is not None
-                 or re.fullmatch(r"(subscribe|alert|watch|beep|track)( it)?", flat)):
-        # bare "TRACK" / "beep" after a fare quote -> subscribe intent;
-        # Pass 2 (main.py) fills the route from the user's last fare search.
-        return Intent(intent="subscribe",
-                      origin=route[0] if route else None,
-                      destination=route[1] if len(route or []) > 1 else None,
-                      date=day, target_price=target, name=name, raw_text=text)
-
-    if route and re.search(r"\b(to|from|fly|flight)\b", flat):
+    if route:
         # PASS 1 EXTRACTION: partial routes stay partial ("I'm going to
         # Abuja" = destination only). Pass 2 (main.py) asks for what's
         # missing or defaults the origin - never invent data here.
-        return Intent(intent="fare",
-                      origin=route[0] if len(route) > 1 else None,
-                      destination=route[1] if len(route) > 1 else route[0],
-                      date=day, name=name, raw_text=text)
+        # fare needs a route word (to/from/fly/flight) OR a price word
+        # ("Lagos Abuja price", "how much to Abuja").
+        if re.search(r"\b(to|from|fly|flight)\b", flat) \
+                or _PRICE_WORD_RE.search(flat):
+            return Intent(intent="fare",
+                          origin=route[0] if len(route) > 1 else None,
+                          destination=route[1] if len(route) > 1 else route[0],
+                          date=day, name=name, raw_text=text)
 
-    if re.search(r"\b(hello|hi|hey|help|menu|options|what can you do|start)\b", flat):
-        return Intent(intent="help", name=name, raw_text=text)
-    if name:
+    if _GREETING_RE.search(flat) or name:
         return Intent(intent="help", name=name, raw_text=text)
     return None
 
