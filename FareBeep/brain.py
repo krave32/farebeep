@@ -681,6 +681,14 @@ _ORDINAL_TO_N = {
     "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9,
 }
 
+# SECOND BRAIN TOGGLE - OFF for now.
+# The local resolver below is a hand-written second brain for picking. A real
+# product (and this pre-seed) should NOT maintain a second implementation of
+# what the LLM does: when Gemini is down/unclear we answer "which one?"
+# gracefully instead. Flip to True to restore the offline guesser (useful
+# only if you ever want to run the pick flow with no Gemini key).
+_ENABLE_LOCAL_PICK_FALLBACK = False
+
 _AIRLINE_STOP_TOKENS = {"air", "airline", "airlines", "airways", "flight",
                         "flights", "fly", "aviation"}
 
@@ -761,6 +769,8 @@ def resolve_pick(text: str, fares: list, api_key: str = None,
     api_key = api_key or GEMINI_API_KEY
     model = model or GEMINI_MODEL
     if not api_key:
+        if not _ENABLE_LOCAL_PICK_FALLBACK:
+            return None
         return _local_resolve_pick(text, fares)
     n = len(fares)
     options = json.dumps([
@@ -807,6 +817,8 @@ def resolve_pick(text: str, fares: list, api_key: str = None,
             # this NOT a pick (a question, small talk, ...). Trust that - do
             # not second-guess it with the local resolver.
             return None
+    if not _ENABLE_LOCAL_PICK_FALLBACK:
+        return None
     return _local_resolve_pick(text, fares)
 
 

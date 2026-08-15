@@ -485,11 +485,25 @@ def test_local_resolve_pick_ambiguous_or_none():
     assert brain._local_resolve_pick("thanks", _pick_fares()) is None
 
 
-def test_resolve_pick_without_key_uses_local(monkeypatch):
+def test_resolve_pick_without_key_respects_fallback_toggle(monkeypatch):
+    """No key + second brain OFF -> graceful None (no hand-written guesser).
+    Flipping the toggle back on restores the local resolver."""
     monkeypatch.setattr(brain, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(brain, "_ENABLE_LOCAL_PICK_FALLBACK", False)
+    assert brain.resolve_pick("the second one", _pick_fares()) is None
+    monkeypatch.setattr(brain, "_ENABLE_LOCAL_PICK_FALLBACK", True)
     assert brain.resolve_pick("the second one", _pick_fares()) == 2
     assert brain.resolve_pick("are they the same airline?",
                               _pick_fares()) is None
+
+
+def test_resolve_pick_gemini_down_no_local_guess_when_disabled(monkeypatch):
+    """Gemini unreachable + second brain OFF -> None, so the bot answers
+    'which one?' gracefully instead of guessing with hand-written rules."""
+    monkeypatch.setattr(brain, "_ENABLE_LOCAL_PICK_FALLBACK", False)
+    assert brain.resolve_pick("the second one", _pick_fares(),
+                              api_key="x", model="y",
+                              http_client=_FailingClient()) is None
 
 
 def test_resolve_pick_gemini_number():

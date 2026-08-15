@@ -421,7 +421,17 @@ def test_pick_gate_shapes(monkeypatch):
     cheapest") resolve via the brain; a QUESTION about the list is NOT a
     pick - it falls through to the brain."""
     monkeypatch.setattr(main, "_last_fares", {})
-    monkeypatch.setattr(main.brain, "GEMINI_API_KEY", None)  # local resolver
+    monkeypatch.setattr(main.brain, "GEMINI_API_KEY", None)
+
+    # The brain's pick resolver is MOCKED here: this test verifies the GATE
+    # wiring (signals, out-of-range, unclear, question passthrough), not
+    # Gemini's own understanding (that is brain.py's job, unit-tested).
+    def fake_resolve(text, fares):
+        return {"the second one": 2, "air peace please": 2,
+                "the 7am flight": 2, "the dana one": 1,
+                "the cheapest": 1}.get(text.lower().strip())
+
+    monkeypatch.setattr(main.brain, "resolve_pick", fake_resolve)
     phone = "987654321"
     fares = _ranked_fares()
     main._last_fares[phone] = {
@@ -442,12 +452,14 @@ def test_pick_gate_shapes(monkeypatch):
     assert main._try_pick("31", phone) is None          # a DATE, not a pick
     assert main._try_pick("book 2", phone) is None      # not a pick shape
 
-    # natural-language picks resolve through the brain (local resolver here)
+    # natural-language picks resolve through the brain (mocked resolver)
     assert main._try_pick("the second one", phone) is fares[1]
     assert main._try_pick("Air Peace please", phone) is fares[1]
     assert main._try_pick("the 7am flight", phone) is fares[1]
     assert main._try_pick("the Dana one", phone) is fares[0]
     assert main._try_pick("the cheapest", phone) is fares[0]
+    # a pick-shaped message the brain can't resolve -> gentle "which one?"
+    assert main._try_pick("the purple one", phone) == "unclear"
 
     # a QUESTION about the list is not a pick -> the brain answers it
     assert main._try_pick("are they the same airline?", phone) is None
@@ -467,6 +479,8 @@ def test_natural_pick_books_selected_fare(client, monkeypatch):
     ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
     calls = {}
     _install_fake_bookings(monkeypatch, calls)
+    monkeypatch.setattr(main.brain, "resolve_pick",
+                        lambda text, fares: 2)   # brain says: option 2
 
     _post(test_client, "Lagos to Abuja tomorrow")
     r = _post(test_client, "the second one")
@@ -486,6 +500,8 @@ def test_natural_pick_by_airline_books(client, monkeypatch):
     ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
     calls = {}
     _install_fake_bookings(monkeypatch, calls)
+    monkeypatch.setattr(main.brain, "resolve_pick",
+                        lambda text, fares: 2)   # brain says: option 2
 
     _post(test_client, "Lagos to Abuja tomorrow")
     r = _post(test_client, "Air Peace please")
@@ -495,12 +511,14 @@ def test_natural_pick_by_airline_books(client, monkeypatch):
     assert "TEST MODE" in fake.sent[-1][1]
 
 
-def test_natural_pick_unresolved_asks_gently(client):
+def test_natural_pick_unresolved_asks_gently(client, monkeypatch):
     """A pick-shaped message the brain can't resolve never books - the bot
     asks which one and keeps the list active."""
     test_client, fake, ledger = client
     main._last_fares.clear()
     ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
+    monkeypatch.setattr(main.brain, "resolve_pick",
+                        lambda text, fares: None)  # brain can't resolve
 
     _post(test_client, "Lagos to Abuja tomorrow")
     r = _post(test_client, "the purple one")     # nonsense pick
