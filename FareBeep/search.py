@@ -158,23 +158,7 @@ class SerpApiGoogleFlights:
             raise SearchError(
                 "SERPAPI_API_KEY not set - cannot call the Google Flights engine.")
 
-        params = {
-            "engine": self.engine,
-            "departure_id": origin,
-            "arrival_id": destination,
-            "outbound_date": flight_date,
-            "type": "2",            # one-way (1 = round trip, 2 = one way)
-            "currency": self.currency,
-            "hl": "en",
-            "gl": self.gl,          # region focus (ng = Nigeria results bias)
-            "api_key": self.api_key,
-        }
-        try:
-            resp = self._client().get(SERPAPI_BASE_URL, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            raise SearchError(f"SerpApi request failed: {e}") from e
+        data = self._request_data(origin, destination, flight_date)
 
         # The engine returns prices in `self.currency` (default USD - NGN is
         # not supported). Convert to NGN so the ledger + markup math stay
@@ -197,14 +181,65 @@ class SerpApiGoogleFlights:
             "verify_link": _ngn_verify_link(link),
         }
 
-    def _cheapest_flight(self, data: dict) -> Optional[tuple]:
-        """Return (price_usd, airline, link) of the cheapest one-way.
+    def _request_data(self, origin: str, destination: str,
+                      flight_date: str) -> dict:
+        """Run the SerpApi search and return the raw response dict."""
+        params = {
+            "engine": self.engine,
+            "departure_id": origin,
+            "arrival_id": destination,
+            "outbound_date": flight_date,
+            "type": "2",            # one-way (1 = round trip, 2 = one way)
+            "currency": self.currency,
+            "hl": "en",
+            "gl": self.gl,          # region focus (ng = Nigeria results bias)
+            "api_key": self.api_key,
+        }
+        try:
+            resp = self._client().get(SERPAPI_BASE_URL, params=params)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            raise SearchError(f"SerpApi request failed: {e}") from e
 
-        Priority: SerpApi's `best_flights` -> cheapest `other_flights`
-        (one-way legs only) -> Google's `price_insights.lowest_price`.
+    def fetch_list(self, origin: str, destination: str,
+                   flight_date: str, limit: int = 3) -> list:
+        """Top-N cheapest one-way fares, ranked, for the ranked-list reply.
+
+        Returns a list of {price, currency, airline, departs_at,
+        flight_number, verify_link} sorted by price ascending (NGN), or []
+        when the engine has no usable results. Includes every candidate
+        (best_flights + one-way other_flights) so the ranked reply is honest
+        - not just Google's "best" bucket.
         """
-        candidates = []
+        if not self.api_key:
+            raise SearchError(
+                "SERPAPI_API_KEY not set - cannot call the Google Flights engine.")
+        data = self._request_data(origin, destination, flight_date)
 
+        def _to_ngn(price_usd: float) -> float:
+            rate = self.fx_rate or ngn_per_usd()
+            return round(float(price_usd) * rate, 2)
+
+        fares = []
+        for c in self._candidates(data):
+            fares.append({
+                "price": _to_ngn(c["price_usd"]),
+                "currency": "NGN",
+                "airline": c["airline"],
+                "departs_at": c.get("departs_at"),
+                "flight_number": c.get("flight_number"),
+                "verify_link": _ngn_verify_link(c.get("link") or ""),
+            })
+        fares.sort(key=lambda f: f["price"])
+        return fares[:max(1, limit)]
+
+    def _candidates(self, data: dict) -> list:
+        """All one-way fare candidates from the SerpApi response.
+
+        Each: {price_usd, airline, departs_at, flight_number, link}.
+        """
+        out = []
         for group in (data.get("best_flights") or []):
             if not group:
                 continue
@@ -212,10 +247,15 @@ class SerpApiGoogleFlights:
             if price is None:
                 continue
             flights = group.get("flights") or []
-            airline = (flights[0].get("airline") if flights else None) \
-                or group.get("airline") or "Unknown"
-            candidates.append((float(price), airline, group.get("link")))
-
+            first = flights[0] if flights else {}
+            out.append({
+                "price_usd": float(price),
+                "airline": first.get("airline") or group.get("airline")
+                or "Unknown",
+                "departs_at": first.get("departure_time"),
+                "flight_number": first.get("flight_number"),
+                "link": group.get("link"),
+            })
         for row in (data.get("other_flights") or []):
             if not row or row.get("type") != "One way":
                 continue
@@ -223,13 +263,26 @@ class SerpApiGoogleFlights:
             if price is None:
                 continue
             flights = row.get("flights") or []
-            airline = (flights[0].get("airline") if flights else None) \
-                or "Unknown"
-            candidates.append((float(price), airline, data.get(
-                "search_metadata", {}).get("google_flights_url")))
+            first = flights[0] if flights else {}
+            out.append({
+                "price_usd": float(price),
+                "airline": first.get("airline") or "Unknown",
+                "departs_at": first.get("departure_time"),
+                "flight_number": first.get("flight_number"),
+                "link": data.get("search_metadata", {}).get(
+                    "google_flights_url"),
+            })
+        return out
 
+    def _cheapest_flight(self, data: dict) -> Optional[tuple]:
+        """Return (price_usd, airline, link) of the cheapest one-way.
+
+        Priority: cheapest candidate -> Google's `price_insights.lowest_price`.
+        """
+        candidates = self._candidates(data)
         if candidates:
-            return min(candidates, key=lambda c: c[0])
+            best = min(candidates, key=lambda c: c["price_usd"])
+            return best["price_usd"], best["airline"], best["link"]
 
         lowest = (data.get("price_insights") or {}).get("lowest_price")
         if lowest is not None:
@@ -393,6 +446,43 @@ class LedgerSearch:
                         o, d, date_str, result["price"])
         return {**result, "flight_date": date_str, "source": "serpapi",
                 "above_guardrail": above}
+
+    def search_list(self, origin, destination, flight_date,
+                    limit: int = 3) -> tuple:
+        """Ranked fare list for the "reply 1, 2 or 3" flow.
+
+        Live-fetched (the ledger caches one price, not a list - a list-cache
+        column is a flagged follow-up). The cheapest SANE fare is still
+        upserted so the community ledger benefits.
+
+        Returns (fares, surge_fares): `fares` is the ranked list of sane
+        (<= guardrail) fares, sorted by price; `surge_fares` are the results
+        above the guardrail (with prices, so the bot can say "prices are
+        unusually high from ₦X" instead of "no fares"). Never raises.
+        """
+        o = resolve_iata(origin)
+        d = resolve_iata(destination)
+        if not o or not d:
+            return [], []
+        date_str = _as_date_str(flight_date)
+        try:
+            fares = self.live.fetch_list(o, d, date_str, limit=limit)
+        except SearchError as e:
+            logger.warning("search_list failed (%s) - returning empty", e)
+            return [], []
+        sane = [f for f in fares if f["price"] <= self.price_guardrail]
+        surge = [f for f in fares if f["price"] > self.price_guardrail]
+        for f in sane:
+            f["flight_date"] = date_str
+        if sane:
+            best = sane[0]
+            try:
+                self._ledger_upsert(o, d, date_str, best["price"],
+                                    best["currency"], best["airline"],
+                                    best.get("verify_link"))
+            except Exception:
+                logger.exception("search_list: ledger upsert failed")
+        return sane, surge
 
 
 def _is_postgres(db) -> bool:

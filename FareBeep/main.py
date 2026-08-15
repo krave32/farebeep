@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import uuid
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
@@ -49,6 +50,11 @@ notifier = get_notifier()
 # destination_iata, flight_date, price, airline}}. A bare "BOOK" right after
 # a quote books THAT route + date (the bot never silently books today).
 _last_fare: dict = {}
+
+# Per-chat memory of the LAST RANKED fare list {phone: {origin_iata,
+# destination_iata, flight_date, fares: [...]}}. A bare "1"/"2"/"3" reply
+# picks and locks THAT fare (the "reply 1, 2 or 3 to lock" flow).
+_last_fares: dict = {}
 
 
 @app.on_event("startup")
@@ -124,6 +130,25 @@ def _handle_incoming_message(phone: str, text: str) -> None:
     try:
         try:
             user = _get_or_create_user(db, phone)
+
+            # PICK GATE (before the brain): a "1", "2" or "3" reply right
+            # after a ranked fare list selects and locks THAT fare. Narrow:
+            # only when an active list exists AND the message is the number
+            # (or "number 2" / "the 2nd one"). Without a list, a bare number
+            # falls through to the brain as a DATE - never intercepted.
+            pick = _try_pick(text, phone)
+            if pick is not None:
+                if pick == "out_of_range":
+                    n = len(_last_fares.get(phone, {}).get("fares", []))
+                    _say(phone, f"I only showed {n} option"
+                         + ("s" if n != 1 else "")
+                         + ". Reply 1-" + str(n) + ", or ask me for a new search.",
+                         user.name)
+                else:
+                    _reply_booking(db, user, brain.Intent(intent="book"),
+                                   picked_fare=pick)
+                return
+
             intent = brain.parse_intent(text)
             logger.info("Intent=%s payload=%s phone=%s",
                         intent.intent, intent.as_dict(), phone)
@@ -208,46 +233,97 @@ def _get_or_create_user(db, phone: str) -> User:
     return user
 
 
+def _try_pick(text: str, phone: str):
+    """Interpret a reply as a ranked-list pick. Returns the picked fare dict,
+    "out_of_range" when the number exceeds the list, or None to fall through
+    to the brain (no active list, or not a pick-shaped message)."""
+    ctx = _last_fares.get(phone)
+    if not ctx or not ctx.get("fares"):
+        return None
+    m = _PICK_RE.search(text.strip())
+    if not m:
+        return None
+    n = int(m.group(1))
+    if n > len(ctx["fares"]):
+        return "out_of_range"
+    return ctx["fares"][n - 1]
+
+
+# A bare "2", "number 2", "option 2", "pick 2", "the 2nd one", "#2".
+# Only reached when an active ranked list exists (see _try_pick).
+_PICK_RE = re.compile(
+    r"^(?:the\s+)?(?:number|option|pick|choose|select)?\s*#?\s*"
+    r"([1-9])\s*(?:st|nd|rd|th)?\s*(?:one)?\s*$",
+    re.IGNORECASE)
+
+
 def _reply_fare(db, user: User, intent: brain.Intent) -> None:
     # Pass 2: destination-only with a date -> search from the user's default
     # hub (Lagos - Nigeria's main base). The fare reply names both cities,
     # so any wrong assumption is visible and correctable.
     origin_iata = intent.origin_iata or "LOS"
     search = LedgerSearch(db)
-    fare = search.search(origin_iata, intent.destination_iata, intent.date)
-    if fare is None:
+    fares, surge_fares = search.search_list(origin_iata,
+                                            intent.destination_iata,
+                                            intent.date, limit=3)
+    if not fares:
+        if surge_fares:
+            # Everything is above the guardrail - flag it, don't fake "no fares".
+            surge_price = min(f["price"] for f in surge_fares)
+            _say(user.phone,
+                 f"Flights are at a surge rate on "
+                 f"{city_name(origin_iata)} -> "
+                 f"{city_name(intent.destination_iata)} right now. 🚨 Prices "
+                 f"are unusually high (from ₦{surge_price:,.0f}) - I won't "
+                 f"sell you that. Try again in a bit, or TRACK and I'll Beep "
+                 f"you when it normalises.",
+                 user.name)
+            return
         _say(user.phone,
              f"No fare found {city_name(origin_iata)} -> "
-             f"{city_name(intent.destination_iata)} for {intent.date or 'that date'}.",
+             f"{city_name(intent.destination_iata)} for "
+             f"{intent.date or 'that date'}.",
              user.name)
         return
-    if fare.get("above_guardrail"):
-        # Surge guard: don't sell an insane number - flag it and offer TRACK.
+
+    if len(fares) == 1:
+        # Thin route: one result - keep the classic single-fare reply.
+        fare = fares[0]
+        _last_fare[user.phone] = {
+            "origin_iata": origin_iata,
+            "destination_iata": intent.destination_iata,
+            "flight_date": fare["flight_date"],
+            "price": fare["price"],
+            "airline": fare["airline"],
+        }
         _say(user.phone,
-             f"I found a flight on {fare['airline']}, but the price is "
-             f"currently at a surge rate of ₦{fare['price']:,.0f}. 🚨 This is "
-             f"much higher than the ₦85k average for "
-             f"{city_name(origin_iata)} -> {city_name(intent.destination_iata)}. "
-             f"Would you like me to TRACK this so I can Beep you when the "
-             f"price returns to normal?",
+             f"Fare {city_name(origin_iata)} -> "
+             f"{city_name(intent.destination_iata)} {fare['flight_date']}:\n"
+             f"₦{fare['price']:,.0f} via {fare['airline']} (live)\n"
+             f"Verify: {fare['verify_link']}\n"
+             f"Reply BOOK to buy at ₦{_booking_total(fare['price']):,.0f} "
+             f"(Paystack), or TRACK to get a Beep when it drops.",
              user.name)
         return
-    # remember the quote: a bare "BOOK" later books THIS route + date
-    _last_fare[user.phone] = {
+
+    # Ranked list - the "reply 1, 2 or 3 to lock" flow.
+    _last_fares[user.phone] = {
         "origin_iata": origin_iata,
         "destination_iata": intent.destination_iata,
-        "flight_date": fare["flight_date"],
-        "price": fare["price"],
-        "airline": fare["airline"],
+        "flight_date": fares[0]["flight_date"],
+        "fares": fares,
     }
-    hit = "cached" if fare["source"] == "ledger" else "live"
+    origin = city_name(origin_iata)
+    destination = city_name(intent.destination_iata)
+    lines = [f"{i}. {f['airline']}"
+             + (f" {f['departs_at']}" if f.get("departs_at") else "")
+             + f" — ₦{f['price']:,.0f}"
+             for i, f in enumerate(fares, start=1)]
     _say(user.phone,
-         f"Fare {city_name(origin_iata)} -> {city_name(intent.destination_iata)} "
-         f"{fare['flight_date']}:\n"
-         f"₦{fare['price']:,.0f} via {fare['airline']} ({hit})\n"
-         f"Verify: {fare['verify_link']}\n"
-         f"Reply BOOK to buy at ₦{_booking_total(fare['price']):,.0f} "
-         f"(Paystack), or TRACK to get a Beep when it drops.",
+         f"{len(fares)} fares, {origin} -> {destination}, "
+         f"{fares[0]['flight_date']}:\n"
+         + "\n".join(lines)
+         + "\n\nReply 1, 2 or 3 to lock the fare.",
          user.name)
 
 
@@ -256,7 +332,8 @@ def _booking_total(airline_price: float) -> float:
     return calculate_final_price(airline_price)["total_amount"]
 
 
-def _reply_booking(db, user: User, intent: brain.Intent) -> None:
+def _reply_booking(db, user: User, intent: brain.Intent,
+                   picked_fare: dict = None) -> None:
     """THE LIVE HANDSHAKE - what happens when a user replies BOOK.
 
     1. FORCE REFRESH: the Shared Ledger is ignored; SerpApi is queried
@@ -265,57 +342,100 @@ def _reply_booking(db, user: User, intent: brain.Intent) -> None:
     3. The WhatsApp/TG call: the Paystack TEST link + the "Price Locked"
        message, with the 10-minute expiry stated up front.
 
+    picked_fare: when set, the user picked "1, 2 or 3" from a ranked list -
+    the route/date come from the list context and the SELECTED flight is
+    re-verified live (by flight number) so the price is fresh, never the
+    stale list price.
+
     Date resolution: the intent's own date wins; otherwise the date of the
     LAST fare quote in this chat (so "BOOK" right after a quote books that
     flight). With neither, the bot ASKS - it never silently books today.
     """
     ctx = _last_fare.get(user.phone) or {}
-    origin_iata = intent.origin_iata or ctx.get("origin_iata")
-    destination_iata = intent.destination_iata or ctx.get("destination_iata")
-    if not (origin_iata and destination_iata):
-        _say(user.phone,
-             "To book: send your route, e.g. BOOK Lagos to Abuja tomorrow "
-             "(or BOOK right after a fare quote I just sent you).",
-             user.name)
-        return
-    flight_date = intent.date or ctx.get("flight_date")
-    if not flight_date:
-        _say(user.phone,
-             "Which date? E.g. BOOK Lagos to Abuja on the 31st - I won't "
-             "book a flight for today without you saying so.",
-             user.name)
-        return
+    list_ctx = _last_fares.get(user.phone) or {}
+    if picked_fare is not None:
+        origin_iata = list_ctx.get("origin_iata")
+        destination_iata = list_ctx.get("destination_iata")
+        flight_date = list_ctx.get("flight_date")
+        if not (origin_iata and destination_iata and flight_date):
+            _say(user.phone,
+                 "I've lost that fare list - ask me for the fares again "
+                 "and I'll re-run the search.",
+                 user.name)
+            return
+    else:
+        origin_iata = intent.origin_iata or ctx.get("origin_iata")
+        destination_iata = intent.destination_iata or ctx.get("destination_iata")
+        flight_date = intent.date or ctx.get("flight_date")
+        if not (origin_iata and destination_iata):
+            _say(user.phone,
+                 "To book: send your route, e.g. BOOK Lagos to Abuja tomorrow "
+                 "(or BOOK right after a fare quote I just sent you).",
+                 user.name)
+            return
+        if not flight_date:
+            _say(user.phone,
+                 "Which date? E.g. BOOK Lagos to Abuja on the 31st - I won't "
+                 "book a flight for today without you saying so.",
+                 user.name)
+            return
 
     search = LedgerSearch(db)
-    fare = search.search(origin_iata, destination_iata, flight_date,
-                         force_refresh=True)
-    if fare is None:
-        _say(user.phone,
-             "That seat/route is no longer available right now - ask me for "
-             "the latest fare again and I'll re-check live.",
-             user.name)
-        return
-    if fare.get("above_guardrail"):
-        _say(user.phone,
-             "That fare is at a surge price right now - I can't lock it "
-             "safely. Try again in a bit, or TRACK it and I'll Beep you "
-             "when it normalises.",
-             user.name)
-        return
+    if picked_fare is not None:
+        # Force-refresh the ranked list live and re-locate the picked flight
+        # by its number (prices move - never book the stale list price).
+        fares, _ = search.search_list(origin_iata, destination_iata,
+                                      flight_date, limit=6)
+        picked_no = picked_fare.get("flight_number")
+        if picked_no:
+            fare = next((f for f in fares
+                         if f.get("flight_number") == picked_no), None)
+        else:
+            fare = next((f for f in fares
+                         if f.get("airline") == picked_fare.get("airline")
+                         and f.get("departs_at") == picked_fare.get("departs_at")),
+                        None)
+        if fare is None:
+            _say(user.phone,
+                 "That option is no longer available at that price - the "
+                 "seat or fare may have moved. Reply 1, 2 or 3 again, or "
+                 "ask me for a fresh search.",
+                 user.name)
+            return
+    else:
+        fare = search.search(origin_iata, destination_iata, flight_date,
+                             force_refresh=True)
+        if fare is None:
+            _say(user.phone,
+                 "That seat/route is no longer available right now - ask me for "
+                 "the latest fare again and I'll re-check live.",
+                 user.name)
+            return
+        if fare.get("above_guardrail"):
+            _say(user.phone,
+                 "That fare is at a surge price right now - I can't lock it "
+                 "safely. Try again in a bit, or TRACK it and I'll Beep you "
+                 "when it normalises.",
+                 user.name)
+            return
 
     bookings = BookingService(db)
     try:
         result = bookings.create_booking(
             user.user_id, origin_iata, destination_iata,
             fare["flight_date"], fare["price"],
-            flight_iata=intent.flight,
+            flight_iata=fare.get("flight_number") or intent.flight,
             email=user.email or f"{user.phone.replace('+', '')}@farebeep.ng",
             airline=fare.get("airline"),
-            source=fare["source"])
+            source="serpapi")
     except Exception as e:
         logger.error("Booking creation failed: %s", e)
         _say(user.phone, "Payment link could not be created. Try again in a minute.", user.name)
         return
+
+    if picked_fare is not None:
+        # A pick is consumed by booking: a stray "2" later must not rebook.
+        _last_fares.pop(user.phone, None)
 
     session = result["session"]
     expires = result["expires_at"].strftime("%H:%M")

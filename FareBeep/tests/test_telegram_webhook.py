@@ -38,6 +38,12 @@ def client(monkeypatch, session_factory):
                     "price": 118500.0, "airline": "Air Peace",
                     "verify_link": "https://example.com/fare"}
 
+        def search_list(self, origin, destination, date_, limit=3):
+            f = {"source": "ledger", "flight_date": date_ or "2026-08-14",
+                 "price": 118500.0, "airline": "Air Peace",
+                 "verify_link": "https://example.com/fare"}
+            return [f], []
+
     monkeypatch.setattr(main, "LedgerSearch", FakeLedger)
 
     class FakeNotifier:

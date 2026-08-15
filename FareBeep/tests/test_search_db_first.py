@@ -10,21 +10,26 @@ import pytest
 
 from FareBeep.iata import resolve_iata
 from FareBeep.models import FareLedger, User, utcnow
-from FareBeep.search import LedgerSearch, SearchError
+from FareBeep.search import LedgerSearch, SearchError, SerpApiGoogleFlights
 
 
 class FakeLiveApi:
     """Records every call so tests can prove order + count."""
 
-    def __init__(self, fare=None):
+    def __init__(self, fare=None, fares=None):
         self.fare = fare or {"price": 98000.0, "currency": "NGN",
                              "airline": "Air Peace",
                              "verify_link": "https://google.com/travel/flights?q=x"}
+        self.fares = fares
         self.calls = []
 
     def fetch(self, origin, destination, flight_date):
         self.calls.append((origin, destination, flight_date))
         return self.fare
+
+    def fetch_list(self, origin, destination, flight_date, limit=3):
+        self.calls.append((origin, destination, flight_date))
+        return (self.fares or [self.fare])[:max(1, limit)]
 
 
 @pytest.fixture
@@ -114,3 +119,91 @@ def test_resolve_iata_ph_vs_phc():
     assert resolve_iata("Port Harcourt") == "PHC"
     assert resolve_iata("LOS") == "LOS"
     assert resolve_iata("Mars") is None
+
+
+# ---------------------------------------------------------------------------
+# The ranked-list flow (the "reply 1, 2 or 3 to lock" demo)
+# ---------------------------------------------------------------------------
+def test_fetch_list_parses_sorts_limits_and_converts_to_ngn(monkeypatch):
+    """best_flights + one-way other_flights -> ranked NGN list, limit applied."""
+    engine = SerpApiGoogleFlights(api_key="test-key", fx_rate=1500.0)
+    data = {
+        "best_flights": [
+            {"price": 150, "flights": [
+                {"airline": "Arik Air", "departure_time": "07:10",
+                 "flight_number": "W3 101"}],
+             "link": "https://www.google.com/travel/flights?q=a"},
+            {"price": 120, "flights": [
+                {"airline": "Air Peace", "departure_time": "08:30",
+                 "flight_number": "P4 202"}],
+             "link": "https://www.google.com/travel/flights?q=b"},
+        ],
+        "other_flights": [
+            {"type": "One way", "price": 200, "flights": [
+                {"airline": "Ibom Air", "departure_time": "10:45",
+                 "flight_number": "QI 303"}]},
+        ],
+        "search_metadata": {"google_flights_url":
+                            "https://www.google.com/travel/flights?q=all"},
+    }
+    monkeypatch.setattr(engine, "_request_data",
+                        lambda o, d, f: data)
+    fares = engine.fetch_list("LOS", "ABV", "2026-08-20", limit=3)
+
+    assert [f["price"] for f in fares] == [180000.0, 225000.0, 300000.0]
+    assert fares[0]["airline"] == "Air Peace"
+    assert fares[0]["departs_at"] == "08:30"
+    assert fares[0]["flight_number"] == "P4 202"
+    assert fares[2]["airline"] == "Ibom Air"        # one-way other_flights kept
+    assert fares[2]["departs_at"] == "10:45"
+    assert all(f["currency"] == "NGN" for f in fares)
+    assert "curr=NGN" in fares[0]["verify_link"]
+    assert all(f["verify_link"].startswith("https://") for f in fares)
+
+    assert len(engine.fetch_list("LOS", "ABV", "2026-08-20", limit=2)) == 2
+
+
+def test_search_list_splits_sane_and_surge(search, db):
+    """Above-guardrail results are surfaced separately (with prices), sane
+    ones keep ranked order + flight_date, cheapest sane reaches the ledger."""
+    service, live = search
+    live.fares = [
+        {"price": 98000.0, "currency": "NGN", "airline": "Dana Air",
+         "departs_at": "06:00", "flight_number": "9J 333",
+         "verify_link": "https://g.com/3"},
+        {"price": 120000.0, "currency": "NGN", "airline": "Air Peace",
+         "departs_at": "07:10", "flight_number": "P4 111",
+         "verify_link": "https://g.com/1"},
+        {"price": 420000.0, "currency": "NGN", "airline": "Azman Air",
+         "departs_at": "09:00", "flight_number": "ZJ 222",
+         "verify_link": "https://g.com/2"},
+    ]
+    sane, surge = service.search_list("Lagos", "Abuja", "2026-08-20")
+
+    assert [f["price"] for f in sane] == [98000.0, 120000.0]
+    assert [f["price"] for f in surge] == [420000.0]
+    assert all(f["flight_date"] == "2026-08-20" for f in sane)
+    assert "flight_date" not in surge[0]
+    assert live.calls == [("LOS", "ABV", "2026-08-20")]
+
+    row = db.query(FareLedger).first()      # cheapest SANE fare upserted
+    assert row.price == 98000.0
+    assert row.origin == "LOS" and row.destination == "ABV"
+
+
+def test_search_list_returns_empty_pair_on_api_failure(search, monkeypatch):
+    """The bot must never crash on an engine error - it just shows nothing."""
+    service, live = search
+
+    def boom(*args, **kwargs):
+        raise SearchError("engine down")
+
+    monkeypatch.setattr(live, "fetch_list", boom)
+    assert service.search_list("Lagos", "Abuja", "2026-08-20") == ([], [])
+
+
+def test_search_list_unresolvable_route_returns_empty(search):
+    """Garbage cities are rejected by the dict before any API call."""
+    service, live = search
+    assert service.search_list("Xanadu", "Atlantis", "2026-08-20") == ([], [])
+    assert live.calls == []
