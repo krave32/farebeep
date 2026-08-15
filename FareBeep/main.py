@@ -144,6 +144,13 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                          + ("s" if n != 1 else "")
                          + ". Reply 1-" + str(n) + ", or ask me for a new search.",
                          user.name)
+                elif pick == "unclear":
+                    n = len(_last_fares.get(phone, {}).get("fares", []))
+                    _say(phone,
+                         "Sorry, I didn't quite catch which one you meant - "
+                         f"just reply 1-{n} (or say the airline, like "
+                         "'Air Peace').",
+                         user.name)
                 else:
                     _reply_booking(db, user, brain.Intent(intent="book"),
                                    picked_fare=pick)
@@ -198,11 +205,19 @@ def _handle_incoming_message(phone: str, text: str) -> None:
         db.close()
 
 
-def _say(phone: str, msg: str, user_name: str = None) -> None:
-    """Send a reply - Gemini runs a personality pass over it first so the
-    bot sounds human; on AI failure the template goes out verbatim."""
-    notifier.send_text(phone, brain.compose_reply(msg, user_name=user_name)
-                       if msg else "")
+def _say(phone: str, msg: str, user_name: str = None,
+         humanized: bool = False) -> None:
+    """Send a reply. By default Gemini runs a personality pass first so the
+    bot sounds human; on AI failure the template goes out verbatim. When the
+    message is ALREADY AI-narrated (the ranked fare list) pass humanized=True
+    so it is sent verbatim - no second personality pass to garble the prices."""
+    if not msg:
+        notifier.send_text(phone, "")
+        return
+    if humanized:
+        notifier.send_text(phone, msg)
+        return
+    notifier.send_text(phone, brain.compose_reply(msg, user_name=user_name))
 
 
 def _ask_missing_info(user: User, intent: brain.Intent) -> None:
@@ -235,18 +250,32 @@ def _get_or_create_user(db, phone: str) -> User:
 
 def _try_pick(text: str, phone: str):
     """Interpret a reply as a ranked-list pick. Returns the picked fare dict,
-    "out_of_range" when the number exceeds the list, or None to fall through
-    to the brain (no active list, or not a pick-shaped message)."""
+    "out_of_range" when the number exceeds the list, "unclear" when the reply
+    looks like a pick but no option resolves, or None to fall through to the
+    brain (no active list, or not a pick-shaped message)."""
     ctx = _last_fares.get(phone)
     if not ctx or not ctx.get("fares"):
         return None
     m = _PICK_RE.search(text.strip())
-    if not m:
-        return None
-    n = int(m.group(1))
-    if n > len(ctx["fares"]):
-        return "out_of_range"
-    return ctx["fares"][n - 1]
+    if m:
+        n = int(m.group(1))
+        if n > len(ctx["fares"]):
+            return "out_of_range"
+        return ctx["fares"][n - 1]
+    # Natural-language pick ("the second one", "Air Peace", "the 7am flight",
+    # "the cheapest") resolved by the brain. Gated on pick signals so an
+    # unrelated message never costs an AI call.
+    if _looks_like_pick(text, ctx["fares"]):
+        idx = brain.resolve_pick(text, ctx["fares"])
+        if idx is None:
+            # A QUESTION about the list ("is that the cheapest?", "are they
+            # the same airline?") is NOT a pick - let the brain answer it
+            # instead of forcing a 1-2-3 redirect.
+            if _QUESTION_RE.search(text):
+                return None
+            return "unclear"
+        return ctx["fares"][idx - 1]
+    return None
 
 
 # A bare "2", "number 2", "option 2", "pick 2", "the 2nd one", "#2".
@@ -255,6 +284,38 @@ _PICK_RE = re.compile(
     r"^(?:the\s+)?(?:number|option|pick|choose|select)?\s*#?\s*"
     r"([1-9])\s*(?:st|nd|rd|th)?\s*(?:one)?\s*$",
     re.IGNORECASE)
+
+# Cheap gate before the AI pick resolver: only messages that could plausibly
+# be picking (ordinals, "one", "cheapest", an am/pm time, ...) spend an AI
+# call. Everything else falls through to the brain untouched.
+_PICK_SIGNAL_RE = re.compile(
+    r"\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|last|"
+    r"one|option|cheapest|cheaper|cheap|best|deal|pick|choose|select)\b"
+    r"|\b\d(?:st|nd|rd|th)\b|\b\d{1,2}\s*(?:am|pm)\b", re.IGNORECASE)
+
+_QUESTION_RE = re.compile(
+    r"\?|\b(is|are|was|were|do|does|did|can|could|what|which|how|when|"
+    r"where)\b", re.IGNORECASE)
+
+
+def _looks_like_pick(text: str, fares: list) -> bool:
+    """True when the message could be choosing a listed fare - so we try the
+    pick resolver; False means it is unrelated and should go to the brain."""
+    if _PICK_SIGNAL_RE.search(text):
+        return True
+    flat = text.lower()
+    upper = text.upper()
+    for f in fares:
+        airline = (f.get("airline") or "").lower()
+        if airline and any(t in flat for t in airline.split() if len(t) >= 3):
+            return True
+        fnum = (f.get("flight_number") or "").upper()
+        if fnum and fnum in upper:
+            return True
+        dep = f.get("departs_at")
+        if dep and re.match(r"\d{1,2}:\d{2}", str(dep)) and str(dep)[:5] in flat:
+            return True
+    return False
 
 
 def _reply_fare(db, user: User, intent: brain.Intent) -> None:
@@ -306,7 +367,9 @@ def _reply_fare(db, user: User, intent: brain.Intent) -> None:
              user.name)
         return
 
-    # Ranked list - one option per airline, phrased like a human agent.
+    # Ranked list - one option per airline, NARRATED by the brain so it reads
+    # like a person presenting choices, not a menu. The numbered options stay
+    # pickable (reply 1, 2 or 3 - or just say the airline).
     _last_fares[user.phone] = {
         "origin_iata": origin_iata,
         "destination_iata": intent.destination_iata,
@@ -315,19 +378,10 @@ def _reply_fare(db, user: User, intent: brain.Intent) -> None:
     }
     origin = city_name(origin_iata)
     destination = city_name(intent.destination_iata)
-    lines = [f"{i}. {f['airline']}"
-             + (f", leaves {f['departs_at']}" if f.get("departs_at") else "")
-             + f" - ₦{f['price']:,.0f}"
-             for i, f in enumerate(fares, start=1)]
-    nums = list(range(1, len(fares) + 1))
-    prompt = (", ".join(str(n) for n in nums[:-1]) + " or "
-              + str(nums[-1]))
-    _say(user.phone,
-         f"Here's what I found {origin} -> {destination} on "
-         f"{fares[0]['flight_date']}:\n"
-         + "\n".join(lines)
-         + f"\n\nWhich one would you like? Reply {prompt}.",
-         user.name)
+    msg = brain.compose_ranked_reply(
+        fares, origin, destination, fares[0]["flight_date"],
+        user_name=user.name)
+    _say(user.phone, msg, user.name, humanized=True)
 
 
 def _booking_total(airline_price: float) -> float:

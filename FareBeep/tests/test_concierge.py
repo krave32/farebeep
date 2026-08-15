@@ -416,8 +416,12 @@ def test_picked_flight_no_longer_available_is_handled(client, monkeypatch):
 
 def test_pick_gate_shapes(monkeypatch):
     """_try_pick: active list + a pick-shaped message -> the fare; anything
-    else -> None (falls through to the brain as a date, never intercepted)."""
+    else -> None (falls through to the brain as a date, never intercepted).
+    Natural picks ("the second one", "Air Peace", "the 7am flight", "the
+    cheapest") resolve via the brain; a QUESTION about the list is NOT a
+    pick - it falls through to the brain."""
     monkeypatch.setattr(main, "_last_fares", {})
+    monkeypatch.setattr(main.brain, "GEMINI_API_KEY", None)  # local resolver
     phone = "987654321"
     fares = _ranked_fares()
     main._last_fares[phone] = {
@@ -437,5 +441,89 @@ def test_pick_gate_shapes(monkeypatch):
     assert main._try_pick("5", phone) == "out_of_range"
     assert main._try_pick("31", phone) is None          # a DATE, not a pick
     assert main._try_pick("book 2", phone) is None      # not a pick shape
+
+    # natural-language picks resolve through the brain (local resolver here)
+    assert main._try_pick("the second one", phone) is fares[1]
+    assert main._try_pick("Air Peace please", phone) is fares[1]
+    assert main._try_pick("the 7am flight", phone) is fares[1]
+    assert main._try_pick("the Dana one", phone) is fares[0]
+    assert main._try_pick("the cheapest", phone) is fares[0]
+
+    # a QUESTION about the list is not a pick -> the brain answers it
+    assert main._try_pick("are they the same airline?", phone) is None
+    assert main._try_pick("is that the cheapest?", phone) is None
+    assert main._try_pick("thanks", phone) is None      # small talk -> brain
+
     main._last_fares.clear()
     assert main._try_pick("2", phone) is None           # no active list
+
+
+def test_natural_pick_books_selected_fare(client, monkeypatch):
+    """'the second one' - a natural pick, not a bare number - resolves via
+    the brain to Air Peace (option 2) and books it live; the list is then
+    consumed so a stray reply can't rebook."""
+    test_client, fake, ledger = client
+    main._last_fares.clear()
+    ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
+    calls = {}
+    _install_fake_bookings(monkeypatch, calls)
+
+    _post(test_client, "Lagos to Abuja tomorrow")
+    r = _post(test_client, "the second one")
+    assert r.status_code == 200
+    assert calls["airline_price"] == 118500.0, calls    # Air Peace (option 2)
+    assert calls["flight_iata"] == "P4 111", calls
+    assert calls["airline"] == "Air Peace", calls
+    assert calls["origin"] == "LOS" and calls["destination"] == "ABV"
+    assert "TEST MODE" in fake.sent[-1][1]
+    assert "987654321" not in main._last_fares       # pick consumed
+
+
+def test_natural_pick_by_airline_books(client, monkeypatch):
+    """Picking by airline name books the matching listed fare."""
+    test_client, fake, ledger = client
+    main._last_fares.clear()
+    ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
+    calls = {}
+    _install_fake_bookings(monkeypatch, calls)
+
+    _post(test_client, "Lagos to Abuja tomorrow")
+    r = _post(test_client, "Air Peace please")
+    assert r.status_code == 200
+    assert calls["flight_iata"] == "P4 111", calls
+    assert calls["airline"] == "Air Peace", calls
+    assert "TEST MODE" in fake.sent[-1][1]
+
+
+def test_natural_pick_unresolved_asks_gently(client):
+    """A pick-shaped message the brain can't resolve never books - the bot
+    asks which one and keeps the list active."""
+    test_client, fake, ledger = client
+    main._last_fares.clear()
+    ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
+
+    _post(test_client, "Lagos to Abuja tomorrow")
+    r = _post(test_client, "the purple one")     # nonsense pick
+    assert r.status_code == 200
+    body = fake.sent[-1][1]
+    assert "didn't quite catch" in body
+    assert "987654321" in main._last_fares       # list still active
+
+
+def test_ranked_reply_narrated_by_ai_sent_verbatim(client, monkeypatch):
+    """The ranked list is narrated by the brain ONCE - sent verbatim with no
+    second personality pass that could garble the prices or numbers."""
+    test_client, fake, ledger = client
+    main._last_fares.clear()
+    ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
+    narrated = ("Hi Damilola! 😊 Here's what I found Lagos -> Abuja on "
+                "2026-08-14:\n1. Dana Air, leaves 06:00 - ₦98,000\n2. Air "
+                "Peace, leaves 07:10 - ₦118,500\n3. Green Africa, leaves "
+                "08:00 - ₦154,000\n\nWhich one would you like? Reply 1, 2 "
+                "or 3 - the Dana is the best value.")
+    monkeypatch.setattr(main.brain, "compose_ranked_reply",
+                        lambda *a, **k: narrated)
+
+    r = _post(test_client, "Lagos to Abuja tomorrow")
+    assert r.status_code == 200
+    assert fake.sent[-1][1] == narrated     # verbatim, not re-humanized

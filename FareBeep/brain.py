@@ -625,3 +625,251 @@ def compose_reply(template: str, user_name: str = None, api_key: str = None,
     finally:
         if own_client:
             client.close()
+
+
+# ---------------------------------------------------------------------------
+# PASS 2 C - RANKED FARE LIST - AI narration + natural-language picking
+# ---------------------------------------------------------------------------
+# The ranked list is where the "feel like talking to a person" promise is won
+# or lost. Gemini NARRATES the options (context line + a recommendation, all
+# numbers/prices exact) and UNDERSTANDS the user's pick ("the second one",
+# "Air Peace", "the 7am flight", "the cheapest"). Deterministic templates and
+# the local resolver are the never-degrade fallbacks so the flow works with
+# the LLM down - the same contract as the intent parser.
+
+RANKED_REPLY_PROMPT = """You are FareBeep, a friendly Nigerian Travel Concierge.
+A ranked list of {origin} to {destination} flights on {date} was found. The
+options are given as JSON, each with a number (1-based), airline, departs_at
+and price in naira. Present them as a warm, natural WhatsApp message.
+
+Rules:
+- Open with the greeting {greeting} - nothing before it.
+- You may add ONE short intro line (e.g. "Good options for that day!") and
+  ONE short closing recommendation (e.g. "Option 2 - Air Peace at 118,500 is
+  the best value for a morning flight."), but keep it tight.
+- Keep EVERY option's number, airline, departure time and price EXACTLY as
+  given. Never invent a fare, a price or a time.
+- Make it easy to answer: keep the options clearly numbered (1., 2., 3.).
+- MAX 4 body lines. No markdown. No bullet symbols.
+- End by inviting them to reply with the number they want.
+Output ONLY the final message text."""
+
+
+PICK_PROMPT = """You resolve which numbered flight option a user is choosing.
+A concierge showed the user a ranked list; each option has a number (1-based),
+airline, departure time and price.
+
+Options (JSON):
+{options}
+
+User reply:
+{text}
+
+Rules:
+- Output ONLY a number if the reply is clearly CHOOSING one option: "the
+  second one", "Air Peace", "the 7am flight", "the cheapest", "that one".
+- Output 0 for anything that is NOT a clear choice: questions ("is that the
+  cheapest?", "are they the same airline?"), small talk, or a different
+  request.
+- If the user names an airline, time or price, map it to the matching option
+  number. If nothing matches, output 0.
+Output ONLY the number, nothing else."""
+
+
+_ORDINAL_TO_N = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9,
+}
+
+_AIRLINE_STOP_TOKENS = {"air", "airline", "airlines", "airways", "flight",
+                        "flights", "fly", "aviation"}
+
+
+def _pick_time_variants(departs_at: str) -> list:
+    """'07:10' -> ['07:10', '7:10', '0710', '07:10am', '7:10am', '7am']."""
+    if not departs_at:
+        return []
+    m = re.match(r"(\d{1,2}):(\d{2})", str(departs_at).strip())
+    if not m:
+        return []
+    hh, mm = int(m.group(1)), m.group(2)
+    hour12 = hh % 12 or 12
+    suffix = "pm" if hh >= 12 else "am"
+    variants = [f"{hh:02d}:{mm}", f"{hh}:{mm}", f"{hh:02d}{mm}", f"{hh}{mm}"]
+    variants += [f"{hh}:{mm}{suffix}", f"{hh:02d}:{mm}{suffix}",
+                 f"{hour12}{suffix}"]
+    return variants
+
+
+def _local_resolve_pick(text: str, fares: list) -> Optional[int]:
+    """Deterministic natural-language pick resolution (offline fallback).
+
+    'the second one' / 'Air Peace' / 'the 7am flight' / 'the cheapest' ->
+    the 1-based index. Returns None when no option is clearly chosen (a
+    question, small talk, or conflicting signals). A QUESTION ("is that the
+    cheapest?", "are they the same airline?") is never a pick unless it
+    explicitly selects one ("Can I get the second one?")."""
+    flat = " ".join(text.strip().lower().split())
+    if not flat:
+        return None
+    is_question = "?" in flat or bool(re.match(
+        r"^(is|are|was|were|do|does|did|can|could|will|would|should|what|"
+        r"which|how|when|where|why|who)\b", flat))
+    if is_question and not re.search(
+            r"\b(get|want|take|have|book|pick|choose|select|grab|go with)\b",
+            flat):
+        return None
+    n = len(fares)
+    candidates = set()
+
+    ordinal = re.search(
+        r"\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)\b",
+        flat)
+    if ordinal:
+        candidates.add(_ORDINAL_TO_N[ordinal.group(1)])
+    if re.search(r"\blast\b", flat):
+        candidates.add(n)
+    if re.search(r"\b(cheapest|cheap(er)?|best deal|best value|best)\b", flat):
+        candidates.add(1)
+
+    for i, f in enumerate(fares, start=1):
+        airline = (f.get("airline") or "").lower()
+        tokens = [t for t in airline.split()
+                  if t not in _AIRLINE_STOP_TOKENS and len(t) >= 4]
+        if any(tok in flat for tok in tokens):
+            candidates.add(i)
+        for v in _pick_time_variants(f.get("departs_at")):
+            if v in flat:
+                candidates.add(i)
+        fnum = (f.get("flight_number") or "").upper()
+        if fnum and fnum in text.upper():
+            candidates.add(i)
+
+    if len(candidates) == 1:
+        idx = candidates.pop()
+        return idx if 1 <= idx <= n else None
+    return None
+
+
+def resolve_pick(text: str, fares: list, api_key: str = None,
+                 model: str = None,
+                 http_client: Optional[httpx.Client] = None) -> Optional[int]:
+    """Which numbered option is the user choosing? Returns the 1-based index
+    or None (nothing clearly chosen - a question, small talk, or a pick that
+    doesn't match any option). Gemini decides; the deterministic local
+    resolver is the offline fallback. Never raises."""
+    api_key = api_key or GEMINI_API_KEY
+    model = model or GEMINI_MODEL
+    if not api_key:
+        return _local_resolve_pick(text, fares)
+    n = len(fares)
+    options = json.dumps([
+        {"number": i, "airline": f.get("airline"),
+         "departs_at": f.get("departs_at"),
+         "price": f"₦{f['price']:,.0f}" if f.get("price") is not None else None}
+        for i, f in enumerate(fares, start=1)])
+    prompt = PICK_PROMPT.replace("{options}", options).replace("{text}", text)
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 512},
+    }
+    url = f"{GEMINI_BASE}/models/{model}:generateContent?key={api_key}"
+    own_client = http_client is None
+    client = http_client or httpx.Client(timeout=30.0)
+    content = None
+    try:
+        for attempt in (0, 1, 2):
+            try:
+                resp = client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                content = data["candidates"][0]["content"]["parts"][0]["text"]
+                break
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429 and attempt < 2:
+                    time.sleep(2.0 * (attempt + 1))   # rate-limit: back off, retry
+                    continue
+                logger.warning("Gemini pick resolve failed (%s) - local", e)
+                break
+            except Exception as e:
+                logger.warning("Gemini pick resolve failed (%s) - local", e)
+                break
+    finally:
+        if own_client:
+            client.close()
+    if content is not None:
+        m = re.search(r"\b([0-9]+)\b", content)
+        if m:
+            idx = int(m.group(1))
+            if 1 <= idx <= n:
+                return idx
+            # Gemini answered but with 0 or an out-of-range number: it judged
+            # this NOT a pick (a question, small talk, ...). Trust that - do
+            # not second-guess it with the local resolver.
+            return None
+    return _local_resolve_pick(text, fares)
+
+
+def compose_ranked_reply(fares: list, origin: str, destination: str,
+                         flight_date: str, user_name: str = None,
+                         api_key: str = None, model: str = None,
+                         http_client: Optional[httpx.Client] = None) -> str:
+    """Present the ranked fare list like a human agent.
+
+    The deterministic numbered template is the guaranteed fallback; when
+    Gemini is reachable it NARRATES the options (a context line, a
+    recommendation, every number/price preserved) so the reply reads as a
+    person talking - not a menu. Never raises."""
+    api_key = api_key or GEMINI_API_KEY
+    model = model or GEMINI_MODEL
+    greeting = _greeting(user_name)
+    lines = [f"{i}. {f['airline']}"
+             + (f", leaves {f['departs_at']}" if f.get("departs_at") else "")
+             + f" - ₦{f['price']:,.0f}"
+             for i, f in enumerate(fares, start=1)]
+    nums = list(range(1, len(fares) + 1))
+    choices = (", ".join(str(n) for n in nums[:-1]) + " or " + str(nums[-1]))
+    template = (f"Here's what I found {origin} -> {destination} on "
+                f"{flight_date}:\n" + "\n".join(lines)
+                + f"\n\nWhich one would you like? Reply {choices}.")
+    if not api_key:
+        return _warm_fallback(template, greeting)
+
+    options = json.dumps([
+        {"number": i, "airline": f.get("airline"),
+         "departs_at": f.get("departs_at"),
+         "price": f"₦{f['price']:,.0f}" if f.get("price") is not None else None}
+        for i, f in enumerate(fares, start=1)])
+    prompt = (RANKED_REPLY_PROMPT
+              .replace("{greeting}", greeting)
+              .replace("{origin}", origin)
+              .replace("{destination}", destination)
+              .replace("{date}", flight_date))
+    payload = {
+        "contents": [{"parts": [{"text": prompt + "\n\nOptions:\n" + options}]}],
+        "generationConfig": {"temperature": 0.6, "maxOutputTokens": 4096},
+    }
+    url = f"{GEMINI_BASE}/models/{model}:generateContent?key={api_key}"
+    own_client = http_client is None
+    client = http_client or httpx.Client(timeout=30.0)
+    try:
+        for attempt in (0, 1, 2):
+            try:
+                resp = client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                return text or _warm_fallback(template, greeting)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429 and attempt < 2:
+                    time.sleep(2.0 * (attempt + 1))   # rate-limit: back off, retry
+                    continue
+                logger.warning("Gemini ranked reply failed: %s", e)
+                return _warm_fallback(template, greeting)
+            except Exception as e:
+                logger.warning("Gemini ranked reply failed: %s", e)
+                return _warm_fallback(template, greeting)
+        return _warm_fallback(template, greeting)
+    finally:
+        if own_client:
+            client.close()

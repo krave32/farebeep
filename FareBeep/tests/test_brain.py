@@ -447,3 +447,142 @@ def test_compose_reply_humanizes_on_success():
     assert "118,500" in out
     # the persona pass must OPEN with a greeting (concierge rule)
     assert out.startswith("Hi there!")
+
+
+# ---------------------------------------------------------------------------
+# PASS 2 C - ranked fare list: AI narration + natural-language picking
+# ---------------------------------------------------------------------------
+def _pick_fares():
+    return [
+        {"airline": "Dana Air", "departs_at": "06:00",
+         "flight_number": "9J 333", "price": 98000.0},
+        {"airline": "Air Peace", "departs_at": "07:10",
+         "flight_number": "P4 111", "price": 118500.0},
+        {"airline": "Green Africa", "departs_at": "08:00",
+         "flight_number": "9J 222", "price": 154000.0},
+    ]
+
+
+def test_local_resolve_pick_ordinal():
+    assert brain._local_resolve_pick("the second one", _pick_fares()) == 2
+    assert brain._local_resolve_pick("first", _pick_fares()) == 1
+    assert brain._local_resolve_pick("the last one", _pick_fares()) == 3
+
+
+def test_local_resolve_pick_airline_time_price():
+    assert brain._local_resolve_pick("Air Peace please", _pick_fares()) == 2
+    assert brain._local_resolve_pick("the 7am flight", _pick_fares()) == 2
+    assert brain._local_resolve_pick("the cheapest", _pick_fares()) == 1
+    assert brain._local_resolve_pick("the Dana one", _pick_fares()) == 1
+
+
+def test_local_resolve_pick_ambiguous_or_none():
+    # conflicting signals -> None; a question / small talk -> None
+    assert brain._local_resolve_pick(
+        "is air peace the cheapest?", _pick_fares()) is None
+    assert brain._local_resolve_pick(
+        "are they the same airline?", _pick_fares()) is None
+    assert brain._local_resolve_pick("thanks", _pick_fares()) is None
+
+
+def test_resolve_pick_without_key_uses_local(monkeypatch):
+    monkeypatch.setattr(brain, "GEMINI_API_KEY", None)
+    assert brain.resolve_pick("the second one", _pick_fares()) == 2
+    assert brain.resolve_pick("are they the same airline?",
+                              _pick_fares()) is None
+
+
+def test_resolve_pick_gemini_number():
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"candidates": [{"content": {"parts": [
+                {"text": "2"}]}}]}
+
+    class _FakeClient:
+        def __init__(self, timeout=None):
+            pass
+
+        def post(self, url, json):
+            return _Resp()
+
+        def close(self):
+            pass
+
+    assert brain.resolve_pick("the early one", _pick_fares(),
+                              api_key="x", model="y",
+                              http_client=_FakeClient()) == 2
+
+
+def test_resolve_pick_gemini_zero_is_not_a_pick():
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"candidates": [{"content": {"parts": [
+                {"text": "0"}]}}]}
+
+    class _FakeClient:
+        def __init__(self, timeout=None):
+            pass
+
+        def post(self, url, json):
+            return _Resp()
+
+        def close(self):
+            pass
+
+    # "0" from Gemini = a question / not a pick -> None (no booking)
+    assert brain.resolve_pick("is that the cheapest?", _pick_fares(),
+                              api_key="x", model="y",
+                              http_client=_FakeClient()) is None
+
+
+def test_compose_ranked_reply_without_key_returns_greeted_template(monkeypatch):
+    monkeypatch.setattr(brain, "GEMINI_API_KEY", None)
+    out = brain.compose_ranked_reply(_pick_fares(), "Lagos", "Abuja",
+                                     "2026-08-29")
+    assert out.startswith("Beep! 🎫")
+    assert "Here's what I found Lagos -> Abuja on 2026-08-29" in out
+    assert "1. Dana Air, leaves 06:00 - ₦98,000" in out
+    assert "Which one would you like? Reply 1, 2 or 3." in out
+
+
+def test_compose_ranked_reply_failure_returns_greeted_template():
+    out = brain.compose_ranked_reply(_pick_fares(), "Lagos", "Abuja",
+                                     "2026-08-29", api_key="x", model="y",
+                                     http_client=_FailingClient())
+    assert out.startswith("Beep! 🎫")
+    assert "1. Dana Air, leaves 06:00 - ₦98,000" in out
+
+
+def test_compose_ranked_reply_narrates_on_success():
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"candidates": [{"content": {"parts": [
+                {"text": "Hi Damilola! 😊 Good options for that day - the "
+                         "Dana at 06:00 is the best value at ₦98,000. Reply "
+                         "1, 2 or 3 to lock one."}]}}]}
+
+    class _FakeClient:
+        def __init__(self, timeout=None):
+            pass
+
+        def post(self, url, json):
+            return _Resp()
+
+        def close(self):
+            pass
+
+    out = brain.compose_ranked_reply(_pick_fares(), "Lagos", "Abuja",
+                                     "2026-08-29", user_name="Damilola",
+                                     api_key="x", model="y",
+                                     http_client=_FakeClient())
+    assert out.startswith("Hi Damilola! 😊")
+    assert "₦98,000" in out
