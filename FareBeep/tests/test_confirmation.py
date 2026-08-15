@@ -104,3 +104,15 @@ def test_unknown_session_returns_not_found(client):
     r = client.get(f"/book/{uuid.uuid4()}")
     assert r.status_code == 200
     assert "not found" in r.text.lower()
+
+
+def test_naive_expires_at_does_not_crash(client, session_factory):
+    """Regression: Postgres returns expires_at as an offset-NAIVE datetime
+    while utcnow() is aware - comparing them used to 500 the page."""
+    db, user, session = _make_session(session_factory)
+    session.expires_at = session.expires_at.replace(tzinfo=None)  # simulate PG
+    db.commit()
+    r = client.get(f"/book/{session.id}")
+    assert r.status_code == 200
+    assert "Confirm your booking" in r.text
+    db.close()

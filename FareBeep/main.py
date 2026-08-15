@@ -597,6 +597,20 @@ _CONSENT_TEXT = (
     "This is our current data notice (version {version}).")
 
 
+def _as_naive(dt):
+    """Normalise a datetime for safe comparison.
+
+    Postgres returns timestamptz columns as offset-NAIVE datetimes, while
+    models.utcnow() is offset-aware - comparing the two raises TypeError.
+    Strip tzinfo from both sides before comparing (all values are UTC).
+    """
+    return dt.replace(tzinfo=None) if dt is not None else None
+
+
+def _is_expired(session: BookingSession) -> bool:
+    return _as_naive(session.expires_at) < _as_naive(utcnow())
+
+
 def _booking_not_found() -> HTMLResponse:
     return HTMLResponse("""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -687,7 +701,7 @@ def booking_page(session_id: uuid.UUID):
         session = db.get(BookingSession, session_id)
         if session is None:
             return _booking_not_found()
-        if session.expires_at < utcnow():
+        if _is_expired(session):
             return _booking_closed(session.origin, session.destination)
         return _booking_page(session)
     finally:
@@ -702,7 +716,7 @@ def booking_confirm(session_id: uuid.UUID):
         session = db.get(BookingSession, session_id)
         if session is None:
             return _booking_not_found()
-        if session.expires_at < utcnow():
+        if _is_expired(session):
             return _booking_closed(session.origin, session.destination)
         user = db.get(User, session.user_id)
         if user is not None:
