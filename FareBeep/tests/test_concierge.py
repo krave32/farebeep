@@ -123,6 +123,10 @@ def client(monkeypatch, session_factory):
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "farebeep-test-secret")
     monkeypatch.setattr(main, "SessionLocal", session_factory)
     monkeypatch.setattr(main.brain, "GEMINI_API_KEY", None)  # local parser
+    # fresh per-chat context per test - these module dicts persist otherwise
+    main._last_fare.clear()
+    main._last_fares.clear()
+    main._pending_fare.clear()
     ledger = {}
     monkeypatch.setattr(main, "LedgerSearch",
                         lambda db: ledger.setdefault("inst", RecordingLedger(db)))
@@ -169,6 +173,48 @@ def test_going_to_lagos_does_not_search_lagos_to_lagos(client):
     assert "Lagos" in body
     assert "Lagos -> Lagos" not in body          # no same-city search shown
     assert ledger.get("inst") is None            # no search was run at all
+
+
+def test_followup_city_answer_completes_pending_fare(client):
+    """THE REPORTED GAP: after 'where will you be flying from?', replying
+    'abuja' must COMPLETE the search (Abuja -> Lagos, next week Thursday) -
+    not get a help menu. The bot remembers what was already discussed."""
+    test_client, fake, ledger = client
+    main._pending_fare.clear()
+    ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
+
+    r = _post(test_client, "I'm going to Lagos on next week thursday")
+    assert r.status_code == 200
+    assert "Where will you be flying from" in fake.sent[-1][1]
+
+    r = _post(test_client, "abuja")
+    assert r.status_code == 200
+    body = fake.sent[-1][1]
+    assert "Abuja" in body and "Lagos" in body    # the completed route
+    assert "Where will you be flying from" not in body
+
+    inst = ledger["inst"]
+    origin, destination, flight_date, _ = inst.calls[-1]
+    assert origin == "ABV"                        # Abuja
+    assert destination == "LOS"                   # Lagos
+    today = date.today()
+    expected = (today + timedelta(
+        days=7 + ((3 - today.weekday()) % 7))).isoformat()
+    assert flight_date == expected                # next week Thursday
+    assert "987654321" not in main._pending_fare  # consumed
+
+
+def test_full_route_search_clears_pending_fare(client):
+    """A complete new route supersedes any pending follow-up - a later bare
+    city must never resurrect a stale conversation."""
+    test_client, fake, ledger = client
+    main._pending_fare.clear()
+    ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
+
+    _post(test_client, "I'm going to Lagos on next week thursday")
+    assert "987654321" in main._pending_fare
+    _post(test_client, "Lagos to Abuja tomorrow")
+    assert "987654321" not in main._pending_fare
 
 
 def test_incomplete_no_route_at_all_asks_gently(client):

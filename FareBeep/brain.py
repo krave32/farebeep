@@ -466,6 +466,20 @@ def _local_date(text: str) -> Optional[str]:
     return None
 
 
+def single_city(text: str) -> Optional[str]:
+    """Exactly ONE known city mentioned in the message -> its IATA, else
+    None. Used to spot the answer to a follow-up question ("abuja" after the
+    bot asked "where are you flying from?")."""
+    route = _local_route(text)
+    return route[0] if route and len(route) == 1 else None
+
+
+def has_date(text: str) -> bool:
+    """True when the message carries a date (so a bare-city answer that also
+    adds a date is a NEW search, not a follow-up answer)."""
+    return _local_date(text) is not None
+
+
 def _local_target_price(text: str) -> Optional[float]:
     m = _PRICE_RE.search(text)
     if not m:

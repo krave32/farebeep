@@ -56,6 +56,11 @@ _last_fare: dict = {}
 # picks and locks THAT fare (the "reply 1, 2 or 3 to lock" flow).
 _last_fares: dict = {}
 
+# Per-chat memory of a PARTIAL fare we asked a follow-up about {phone:
+# {origin_iata, destination_iata, date}} - filled when the user answers the
+# follow-up with a bare city (e.g. we asked "where from?", they reply "abuja").
+_pending_fare: dict = {}
+
 
 @app.on_event("startup")
 def _startup():
@@ -154,6 +159,12 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                                    picked_fare=pick)
                 return
 
+            # CONTINUATION: the user answered our follow-up question with a
+            # bare city ("abuja" after "where will you be flying from?") -
+            # fill the missing piece and search, like a person would.
+            if _fill_pending_fare(db, user, text):
+                return
+
             intent = brain.parse_intent(text)
             logger.info("Intent=%s payload=%s phone=%s",
                         intent.intent, intent.as_dict(), phone)
@@ -165,6 +176,7 @@ def _handle_incoming_message(phone: str, text: str) -> None:
 
             if intent.intent == "fare":
                 if intent.has_route:
+                    _pending_fare.pop(user.phone, None)   # superseded by a full route
                     _reply_fare(db, user, intent)
                 elif intent.destination_iata and intent.date and not intent.origin_iata:
                     # "Find me a flight to Abj for next tuesday" - destination
@@ -224,9 +236,51 @@ def _say(phone: str, msg: str, user_name: str = None,
     notifier.send_text(phone, brain.compose_reply(msg, user_name=user_name))
 
 
+def _fill_pending_fare(db, user: User, text: str) -> bool:
+    """Continue a partial fare conversation: we asked a follow-up (e.g.
+    "where will you be flying from?"), and the user answered with a bare
+    city. Fill the missing slot and run the search. Returns True when
+    handled. Only fires for a clean single-city answer with no new date -
+    anything richer is a fresh request for the brain."""
+    pending = _pending_fare.get(user.phone)
+    if not pending:
+        return False
+    iata = brain.single_city(text)
+    if iata is None or brain.has_date(text):
+        return False
+    origin_iata = pending.get("origin_iata")
+    destination_iata = pending.get("destination_iata")
+    date_ = pending.get("date")
+    if not origin_iata and destination_iata:
+        origin_iata = iata
+    elif not destination_iata and origin_iata:
+        destination_iata = iata
+    else:
+        return False
+    if not (origin_iata and destination_iata and date_):
+        return False
+    _pending_fare.pop(user.phone, None)
+    intent = brain.Intent(intent="fare",
+                          origin=city_name(origin_iata),
+                          destination=city_name(destination_iata),
+                          date=date_)
+    logger.info("Filled pending fare: %s -> %s on %s (from '%s')",
+                origin_iata, destination_iata, date_, text)
+    _reply_fare(db, user, intent)
+    return True
+
+
 def _ask_missing_info(user: User, intent: brain.Intent) -> None:
     """Pass 2 follow-up: the extraction was partial - ask for the missing
-    pieces like a human agent would, never show a blank error."""
+    pieces like a human agent would, never show a blank error. For fare
+    partials we remember what we already know so the user's next bare-city
+    answer completes the search (_fill_pending_fare)."""
+    if intent.intent == "fare":
+        _pending_fare[user.phone] = {
+            "origin_iata": intent.origin_iata,
+            "destination_iata": intent.destination_iata,
+            "date": intent.date,
+        }
     dest = city_name(intent.destination_iata) if intent.destination_iata else None
     origin = city_name(intent.origin_iata) if intent.origin_iata else None
     if dest and not origin and not intent.date:
