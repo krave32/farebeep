@@ -78,8 +78,10 @@ RULES:
 - "how much" / price questions are fare UNLESS the user wants to be alerted
   ("notify me", "alert me", "let me know when") -> then subscribe.
 - Today's date is {{today}}. Resolve "tomorrow", "next week", "next
-  tuesday", "in August" against it. "next week thursday" means the Thursday
-  of the FOLLOWING week (never this week's).
+  tuesday", "in August" against it. "next week thursday" / "next thursday"
+  means the Thursday of the NEXT calendar week (the Mon-Sun week after the
+  current one) - e.g. on a Saturday that is 5 days later, never the Thursday
+  of the week after next. Today's weekday is {{today_weekday}}.
 - CONCISE: output ONLY the JSON object. No preamble, no prose, no markdown
   fences. Nothing else.
 
@@ -151,6 +153,10 @@ def _today() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d")
 
 
+def _today_weekday() -> str:
+    return datetime.utcnow().strftime("%A")
+
+
 def parse_intent(text: str, api_key: str = None, model: str = None,
                  http_client: Optional[httpx.Client] = None) -> Intent:
     """TWO-PASS BRAIN.
@@ -172,6 +178,7 @@ def parse_intent(text: str, api_key: str = None, model: str = None,
         return intent
 
     prompt = SYSTEM_PROMPT.replace("{{today}}", _today())
+    prompt = prompt.replace("{{today_weekday}}", _today_weekday())
     payload = {
         "contents": [
             {"parts": [{"text": prompt + "\n\nUser message: " + text}]}
@@ -366,14 +373,16 @@ def _local_date(text: str) -> Optional[str]:
         return (today + timedelta(days=1)).isoformat()
     if re.search(r"\btoday\b|\bnow\b", text):
         return today.isoformat()
-    # "next week thursday" = the Thursday of the FOLLOWING week - check this
-    # BEFORE the bare "next week" catch-all (which would wrongly return +7).
+    # "next week thursday" = the Thursday of the NEXT calendar week (Mon-Sun
+    # after the current one). Days until that week's Monday = 7 - today.weekday()
+    # (Monday=0), so delta = (7 - today.weekday()) + target. On Saturday that is
+    # 5 days, NOT 12 - "a week from now + Thursday" would be the week AFTER next.
     m = re.search(
         r"\bnext\s+week\s+(monday|tuesday|wednesday|thursday|friday|"
         r"saturday|sunday)\b", text)
     if m:
         target = _WEEKDAYS[m.group(1)]
-        return (today + timedelta(days=7 + ((target - today.weekday()) % 7))
+        return (today + timedelta(days=(7 - today.weekday()) + target)
                 ).isoformat()
     if "next week" in text:
         return (today + timedelta(days=7)).isoformat()
@@ -399,7 +408,7 @@ def _local_date(text: str) -> Optional[str]:
     if wd:
         target = _WEEKDAYS[wd.group(2)]
         if wd.group(1) and "next" in wd.group(1):
-            delta = 7 + ((target - today.weekday()) % 7)   # next week's weekday
+            delta = (7 - today.weekday()) + target   # next calendar week
         else:
             delta = (target - today.weekday()) % 7
             if delta == 0:

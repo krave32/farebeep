@@ -198,8 +198,7 @@ def test_followup_city_answer_completes_pending_fare(client):
     assert origin == "ABV"                        # Abuja
     assert destination == "LOS"                   # Lagos
     today = date.today()
-    expected = (today + timedelta(
-        days=7 + ((3 - today.weekday()) % 7))).isoformat()
+    expected = (today + timedelta(days=(7 - today.weekday()) + 3)).isoformat()
     assert flight_date == expected                # next week Thursday
     assert "987654321" not in main._pending_fare  # consumed
 
@@ -234,8 +233,9 @@ def test_natural_shortcut_searches_with_default_origin(client):
     origin, destination, flight_date, _ = inst.calls[0]
     assert origin == "LOS"          # Pass 2: Lagos is the default hub
     assert destination == "ABV"
-    target = (1 - date.today().weekday()) % 7
-    assert flight_date == (date.today() + timedelta(days=7 + target)).isoformat()
+    expected = (date.today() + timedelta(
+        days=(7 - date.today().weekday()) + 1)).isoformat()
+    assert flight_date == expected          # next calendar week Tuesday
     body = fake.sent[-1][1]
     assert "Air Peace" in body
     assert "118,500" in body

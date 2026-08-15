@@ -19,10 +19,11 @@ def test_local_parser_resolves_route_without_gemini():
 
 
 def test_local_parser_next_week_weekday_is_the_following_week():
-    """'next week thursday' = the Thursday of the FOLLOWING week (not this
-    week's, not a random +7 days)."""
+    """'next week thursday' = the Thursday of the NEXT calendar week (Mon-Sun
+    after the current one): delta = (7 - today.weekday()) + 3. On a Saturday
+    that is 5 days, NOT 12 (the week after next)."""
     today = date.today()
-    expected = today + timedelta(days=7 + ((3 - today.weekday()) % 7))
+    expected = today + timedelta(days=(7 - today.weekday()) + 3)
     assert brain._local_date("next week thursday") == expected.isoformat()
     intent = brain._local_parse("i am going to lagos on next week thursday")
     assert intent.intent == "fare"
@@ -309,8 +310,8 @@ def test_prompt_defines_fare_and_decision_order():
 def test_local_parser_weekday_date_next_tuesday():
     from datetime import date, timedelta
     intent = brain._local_parse("find me a flight to abj for next tuesday")
-    target = (1 - date.today().weekday()) % 7
-    expected = (date.today() + timedelta(days=7 + target)).isoformat()
+    expected = (date.today() + timedelta(days=(7 - date.today().weekday()) + 1)
+                ).isoformat()
     assert intent.date == expected
 
 
