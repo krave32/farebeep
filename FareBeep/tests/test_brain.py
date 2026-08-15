@@ -600,3 +600,56 @@ def test_compose_ranked_reply_narrates_on_success():
                                      http_client=_FakeClient())
     assert out.startswith("Hi Damilola! 😊")
     assert "₦98,000" in out
+
+
+def test_compose_unclear_pick_reply_without_key_echoes_and_relists(monkeypatch):
+    """No key: the 'which one?' echoes the user's own words + re-lists the
+    real options. It apologizes and re-asks, it never guesses."""
+    monkeypatch.setattr(brain, "GEMINI_API_KEY", None)
+    out = brain.compose_unclear_pick_reply("the purple one", _pick_fares())
+    assert out.startswith("Beep! 🎫")
+    assert "didn't quite catch" in out
+    assert '"the purple one"' in out          # echoes what the user said
+    assert "1. Dana Air, leaves 06:00 - ₦98,000" in out
+    assert "Which one would you like? Reply 1, 2 or 3." in out
+
+
+def test_compose_unclear_pick_reply_failure_fallback():
+    out = brain.compose_unclear_pick_reply("the purple one", _pick_fares(),
+                                           api_key="x", model="y",
+                                           http_client=_FailingClient())
+    assert out.startswith("Beep! 🎫")
+    assert "the purple one" in out
+    assert "2. Air Peace, leaves 07:10 - ₦118,500" in out
+
+
+def test_compose_unclear_pick_reply_tailors_on_success():
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"candidates": [{"content": {"parts": [
+                {"text": "Hi Damilola! 😊 Sorry - I don't have a 'purple' "
+                         "option today. Here's what's available:\n1. Dana "
+                         "Air, leaves 06:00 - ₦98,000\n2. Air Peace, leaves "
+                         "07:10 - ₦118,500\n3. Green Africa, leaves 08:00 - "
+                         "₦154,000\n\nWhich one would you like?"}]}}]}
+
+    class _FakeClient:
+        def __init__(self, timeout=None):
+            pass
+
+        def post(self, url, json):
+            return _Resp()
+
+        def close(self):
+            pass
+
+    out = brain.compose_unclear_pick_reply("the purple one", _pick_fares(),
+                                           user_name="Damilola", api_key="x",
+                                           model="y",
+                                           http_client=_FakeClient())
+    assert out.startswith("Hi Damilola! 😊")
+    assert "purple" in out          # tailored to what it observed
+    assert "₦154,000" in out        # prices kept exact

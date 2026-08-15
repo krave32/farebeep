@@ -822,6 +822,29 @@ def resolve_pick(text: str, fares: list, api_key: str = None,
     return _local_resolve_pick(text, fares)
 
 
+def _fare_lines(fares: list) -> list:
+    """'1. Dana Air, leaves 06:00 - ₦98,000' lines for the numbered list."""
+    return [f"{i}. {f['airline']}"
+            + (f", leaves {f['departs_at']}" if f.get("departs_at") else "")
+            + f" - ₦{f['price']:,.0f}"
+            for i, f in enumerate(fares, start=1)]
+
+
+def _fare_options_json(fares: list) -> str:
+    """The numbered options as JSON for the LLM (prices kept exact)."""
+    return json.dumps([
+        {"number": i, "airline": f.get("airline"),
+         "departs_at": f.get("departs_at"),
+         "price": f"₦{f['price']:,.0f}" if f.get("price") is not None else None}
+        for i, f in enumerate(fares, start=1)])
+
+
+def _reply_choices(n: int) -> str:
+    """'1, 2 or 3' style prompt for n options."""
+    nums = list(range(1, n + 1))
+    return ", ".join(str(x) for x in nums[:-1]) + " or " + str(nums[-1])
+
+
 def compose_ranked_reply(fares: list, origin: str, destination: str,
                          flight_date: str, user_name: str = None,
                          api_key: str = None, model: str = None,
@@ -835,23 +858,15 @@ def compose_ranked_reply(fares: list, origin: str, destination: str,
     api_key = api_key or GEMINI_API_KEY
     model = model or GEMINI_MODEL
     greeting = _greeting(user_name)
-    lines = [f"{i}. {f['airline']}"
-             + (f", leaves {f['departs_at']}" if f.get("departs_at") else "")
-             + f" - ₦{f['price']:,.0f}"
-             for i, f in enumerate(fares, start=1)]
-    nums = list(range(1, len(fares) + 1))
-    choices = (", ".join(str(n) for n in nums[:-1]) + " or " + str(nums[-1]))
+    lines = _fare_lines(fares)
     template = (f"Here's what I found {origin} -> {destination} on "
                 f"{flight_date}:\n" + "\n".join(lines)
-                + f"\n\nWhich one would you like? Reply {choices}.")
+                + f"\n\nWhich one would you like? Reply "
+                + _reply_choices(len(fares)) + ".")
     if not api_key:
         return _warm_fallback(template, greeting)
 
-    options = json.dumps([
-        {"number": i, "airline": f.get("airline"),
-         "departs_at": f.get("departs_at"),
-         "price": f"₦{f['price']:,.0f}" if f.get("price") is not None else None}
-        for i, f in enumerate(fares, start=1)])
+    options = _fare_options_json(fares)
     prompt = (RANKED_REPLY_PROMPT
               .replace("{greeting}", greeting)
               .replace("{origin}", origin)
@@ -880,6 +895,81 @@ def compose_ranked_reply(fares: list, origin: str, destination: str,
                 return _warm_fallback(template, greeting)
             except Exception as e:
                 logger.warning("Gemini ranked reply failed: %s", e)
+                return _warm_fallback(template, greeting)
+        return _warm_fallback(template, greeting)
+    finally:
+        if own_client:
+            client.close()
+
+
+UNCLEAR_PICK_PROMPT = """You are FareBeep, a friendly Nigerian Travel Concierge.
+You showed a user a numbered list of flight options, but you could not work
+out which one they are trying to pick. Tailor your reply to what they said.
+
+Options (JSON): {options}
+User reply: {text}
+
+Rules:
+- Open with the greeting {greeting}, nothing before it.
+- Apologize briefly and, where you can, reflect back what they said that did
+  not match (e.g. "I don't have a 'purple' option", "there's no 7am flight
+  today"). If it is simply unclear, say so plainly.
+- Re-list the options clearly numbered (1., 2., 3.) with their airline,
+  departure time and price EXACTLY as given - never invent a fare.
+- Ask them to reply with the number they want.
+- MAX 4 body lines. No markdown. No bullet symbols.
+Output ONLY the final message text."""
+
+
+def compose_unclear_pick_reply(text: str, fares: list, user_name: str = None,
+                               api_key: str = None, model: str = None,
+                               http_client: Optional[httpx.Client] = None) -> str:
+    """A TAILORED 'which one?' when the pick could not be resolved.
+
+    When Gemini is reachable it reflects back what the user said that did
+    not match and re-lists the real options. The deterministic fallback
+    echoes the user's own words and re-lists - it apologizes and re-asks,
+    it never guesses. Never raises."""
+    api_key = api_key or GEMINI_API_KEY
+    model = model or GEMINI_MODEL
+    greeting = _greeting(user_name)
+    lines = _fare_lines(fares)
+    template = (f"Sorry, I didn't quite catch which one you meant. You "
+                f"said: \"{text}\". Here's what's available:\n"
+                + "\n".join(lines)
+                + "\n\nWhich one would you like? Reply "
+                + _reply_choices(len(fares)) + ".")
+    if not api_key:
+        return _warm_fallback(template, greeting)
+
+    options = _fare_options_json(fares)
+    prompt = (UNCLEAR_PICK_PROMPT
+              .replace("{greeting}", greeting)
+              .replace("{options}", options)
+              .replace("{text}", text))
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.6, "maxOutputTokens": 4096},
+    }
+    url = f"{GEMINI_BASE}/models/{model}:generateContent?key={api_key}"
+    own_client = http_client is None
+    client = http_client or httpx.Client(timeout=30.0)
+    try:
+        for attempt in (0, 1, 2):
+            try:
+                resp = client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                return text or _warm_fallback(template, greeting)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429 and attempt < 2:
+                    time.sleep(2.0 * (attempt + 1))   # rate-limit: back off, retry
+                    continue
+                logger.warning("Gemini unclear-pick reply failed: %s", e)
+                return _warm_fallback(template, greeting)
+            except Exception as e:
+                logger.warning("Gemini unclear-pick reply failed: %s", e)
                 return _warm_fallback(template, greeting)
         return _warm_fallback(template, greeting)
     finally:

@@ -513,7 +513,8 @@ def test_natural_pick_by_airline_books(client, monkeypatch):
 
 def test_natural_pick_unresolved_asks_gently(client, monkeypatch):
     """A pick-shaped message the brain can't resolve never books - the bot
-    asks which one and keeps the list active."""
+    apologizes, echoes what was observed and re-lists, keeping the list
+    active."""
     test_client, fake, ledger = client
     main._last_fares.clear()
     ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
@@ -525,6 +526,8 @@ def test_natural_pick_unresolved_asks_gently(client, monkeypatch):
     assert r.status_code == 200
     body = fake.sent[-1][1]
     assert "didn't quite catch" in body
+    assert "the purple one" in body              # echoes what the user said
+    assert "Dana Air" in body                    # re-lists the real options
     assert "987654321" in main._last_fares       # list still active
 
 

@@ -145,12 +145,10 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                          + ". Reply 1-" + str(n) + ", or ask me for a new search.",
                          user.name)
                 elif pick == "unclear":
-                    n = len(_last_fares.get(phone, {}).get("fares", []))
-                    _say(phone,
-                         "Sorry, I didn't quite catch which one you meant - "
-                         f"just reply 1-{n} (or say the airline, like "
-                         "'Air Peace').",
-                         user.name)
+                    ctx = _last_fares.get(phone) or {}
+                    msg = brain.compose_unclear_pick_reply(
+                        text, ctx.get("fares") or [], user_name=user.name)
+                    _say(user.phone, msg, user.name, humanized=True)
                 else:
                     _reply_booking(db, user, brain.Intent(intent="book"),
                                    picked_fare=pick)
