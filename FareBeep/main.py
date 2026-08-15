@@ -306,7 +306,7 @@ def _reply_fare(db, user: User, intent: brain.Intent) -> None:
              user.name)
         return
 
-    # Ranked list - the "reply 1, 2 or 3 to lock" flow.
+    # Ranked list - one option per airline, phrased like a human agent.
     _last_fares[user.phone] = {
         "origin_iata": origin_iata,
         "destination_iata": intent.destination_iata,
@@ -316,14 +316,17 @@ def _reply_fare(db, user: User, intent: brain.Intent) -> None:
     origin = city_name(origin_iata)
     destination = city_name(intent.destination_iata)
     lines = [f"{i}. {f['airline']}"
-             + (f" {f['departs_at']}" if f.get("departs_at") else "")
-             + f" — ₦{f['price']:,.0f}"
+             + (f", leaves {f['departs_at']}" if f.get("departs_at") else "")
+             + f" - ₦{f['price']:,.0f}"
              for i, f in enumerate(fares, start=1)]
+    nums = list(range(1, len(fares) + 1))
+    prompt = (", ".join(str(n) for n in nums[:-1]) + " or "
+              + str(nums[-1]))
     _say(user.phone,
-         f"{len(fares)} fares, {origin} -> {destination}, "
+         f"Here's what I found {origin} -> {destination} on "
          f"{fares[0]['flight_date']}:\n"
          + "\n".join(lines)
-         + "\n\nReply 1, 2 or 3 to lock the fare.",
+         + f"\n\nWhich one would you like? Reply {prompt}.",
          user.name)
 
 

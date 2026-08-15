@@ -327,11 +327,11 @@ def test_ranked_list_reply_when_multiple_fares(client):
     r = _post(test_client, "Lagos to Abuja tomorrow")
     assert r.status_code == 200
     body = fake.sent[-1][1]
-    assert "3 fares, Lagos -> Abuja" in body
-    assert "Reply 1, 2 or 3 to lock" in body
-    assert "1. Dana Air 06:00" in body
-    assert "2. Air Peace 07:10" in body
-    assert "3. Green Africa 08:00" in body
+    assert "Here's what I found Lagos -> Abuja on" in body
+    assert "Which one would you like? Reply 1, 2 or 3." in body
+    assert "1. Dana Air, leaves 06:00 - ₦98,000" in body
+    assert "2. Air Peace, leaves 07:10 - ₦118,500" in body
+    assert "3. Green Africa, leaves 08:00 - ₦154,000" in body
 
     ctx = main._last_fares.get("987654321")
     assert ctx is not None

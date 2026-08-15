@@ -232,6 +232,15 @@ class SerpApiGoogleFlights:
                 "verify_link": _ngn_verify_link(c.get("link") or ""),
             })
         fares.sort(key=lambda f: f["price"])
+        # ONE result per airline (the cheapest): the ranked reply should read
+        # like a person - "Air Peace ₦X, Dana Air ₦Y, Arik ₦Z" - not three
+        # flights on the same airline. When only one airline serves the route
+        # this naturally collapses to a single fare (the classic reply).
+        seen = {}
+        for f in fares:
+            seen.setdefault((f["airline"] or "Unknown").lower(), f)
+        fares = [seen[k] for k in seen]
+        fares.sort(key=lambda f: f["price"])
         return fares[:max(1, limit)]
 
     def _candidates(self, data: dict) -> list:

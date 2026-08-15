@@ -163,6 +163,55 @@ def test_fetch_list_parses_sorts_limits_and_converts_to_ngn(monkeypatch):
     assert len(engine.fetch_list("LOS", "ABV", "2026-08-20", limit=2)) == 2
 
 
+def test_fetch_list_dedupes_to_one_fare_per_airline(monkeypatch):
+    """Three Air Peace departures + Dana + Arik -> ONE per airline (cheapest),
+    ranked - the reply must read like a person, not three flights on the
+    same airline."""
+    engine = SerpApiGoogleFlights(api_key="test-key", fx_rate=1500.0)
+    data = {
+        "best_flights": [
+            {"price": 150, "flights": [
+                {"airline": "Air Peace", "departure_time": "07:10",
+                 "flight_number": "P4 101"}], "link": "https://g.com/1"},
+            {"price": 120, "flights": [
+                {"airline": "Air Peace", "departure_time": "08:30",
+                 "flight_number": "P4 202"}], "link": "https://g.com/2"},
+            {"price": 100, "flights": [
+                {"airline": "Dana Air", "departure_time": "06:00",
+                 "flight_number": "9J 303"}], "link": "https://g.com/3"},
+            {"price": 90, "flights": [
+                {"airline": "Arik Air", "departure_time": "09:00",
+                 "flight_number": "W3 404"}], "link": "https://g.com/4"},
+        ]
+    }
+    monkeypatch.setattr(engine, "_request_data", lambda o, d, f: data)
+    fares = engine.fetch_list("LOS", "ABV", "2026-08-29")
+    assert [f["airline"] for f in fares] == ["Arik Air", "Dana Air", "Air Peace"]
+    assert [f["price"] for f in fares] == [135000.0, 150000.0, 180000.0]
+    assert fares[2]["flight_number"] == "P4 202"   # cheapest Air Peace kept
+
+
+def test_fetch_list_collapses_single_airline_to_one(monkeypatch):
+    """Only one airline serves the route -> a single (cheapest) fare, so the
+    bot gives the classic one-fare reply instead of a pointless 1-2-3 list."""
+    engine = SerpApiGoogleFlights(api_key="test-key", fx_rate=1500.0)
+    data = {
+        "best_flights": [
+            {"price": 150, "flights": [
+                {"airline": "Air Peace", "departure_time": "07:10",
+                 "flight_number": "P4 101"}], "link": "https://g.com/1"},
+            {"price": 120, "flights": [
+                {"airline": "Air Peace", "departure_time": "08:30",
+                 "flight_number": "P4 202"}], "link": "https://g.com/2"},
+        ]
+    }
+    monkeypatch.setattr(engine, "_request_data", lambda o, d, f: data)
+    fares = engine.fetch_list("LOS", "ABV", "2026-08-29")
+    assert len(fares) == 1
+    assert fares[0]["price"] == 180000.0
+    assert fares[0]["flight_number"] == "P4 202"
+
+
 def test_search_list_splits_sane_and_surge(search, db):
     """Above-guardrail results are surfaced separately (with prices), sane
     ones keep ranked order + flight_date, cheapest sane reaches the ledger."""
