@@ -157,6 +157,20 @@ def test_incomplete_destination_only_asks_followup(client):
     assert "Abuja" in body
 
 
+def test_going_to_lagos_does_not_search_lagos_to_lagos(client):
+    """'I'm going to Lagos on next week thursday' must NOT default the origin
+    to the hub (Lagos) and search Lagos->Lagos - it asks where they're
+    flying from instead, and never runs a bogus same-city search."""
+    test_client, fake, ledger = client
+    r = _post(test_client, "I'm going to Lagos on next week thursday")
+    assert r.status_code == 200
+    body = fake.sent[-1][1]
+    assert "Where will you be flying from" in body
+    assert "Lagos" in body
+    assert "Lagos -> Lagos" not in body          # no same-city search shown
+    assert ledger.get("inst") is None            # no search was run at all
+
+
 def test_incomplete_no_route_at_all_asks_gently(client):
     test_client, fake, _ = client
     r = _post(test_client, "I want to fly somewhere")

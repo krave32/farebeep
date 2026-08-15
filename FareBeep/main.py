@@ -169,7 +169,13 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                 elif intent.destination_iata and intent.date and not intent.origin_iata:
                     # "Find me a flight to Abj for next tuesday" - destination
                     # + date, no origin: search from the default hub (Lagos).
-                    _reply_fare(db, user, intent)
+                    # BUT when the destination IS the hub (Lagos), the hub
+                    # cannot also be the origin - that would be Lagos->Lagos.
+                    # Ask where they're flying from instead.
+                    if intent.destination_iata == "LOS":
+                        _ask_missing_info(user, intent)
+                    else:
+                        _reply_fare(db, user, intent)
                 elif intent.is_partial:
                     _ask_missing_info(user, intent)
                 else:

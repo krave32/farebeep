@@ -78,7 +78,8 @@ RULES:
 - "how much" / price questions are fare UNLESS the user wants to be alerted
   ("notify me", "alert me", "let me know when") -> then subscribe.
 - Today's date is {{today}}. Resolve "tomorrow", "next week", "next
-  tuesday", "in August" against it.
+  tuesday", "in August" against it. "next week thursday" means the Thursday
+  of the FOLLOWING week (never this week's).
 - CONCISE: output ONLY the JSON object. No preamble, no prose, no markdown
   fences. Nothing else.
 
@@ -365,6 +366,15 @@ def _local_date(text: str) -> Optional[str]:
         return (today + timedelta(days=1)).isoformat()
     if re.search(r"\btoday\b|\bnow\b", text):
         return today.isoformat()
+    # "next week thursday" = the Thursday of the FOLLOWING week - check this
+    # BEFORE the bare "next week" catch-all (which would wrongly return +7).
+    m = re.search(
+        r"\bnext\s+week\s+(monday|tuesday|wednesday|thursday|friday|"
+        r"saturday|sunday)\b", text)
+    if m:
+        target = _WEEKDAYS[m.group(1)]
+        return (today + timedelta(days=7 + ((target - today.weekday()) % 7))
+                ).isoformat()
     if "next week" in text:
         return (today + timedelta(days=7)).isoformat()
     m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", text)

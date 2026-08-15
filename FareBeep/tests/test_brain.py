@@ -18,6 +18,19 @@ def test_local_parser_resolves_route_without_gemini():
     assert intent.date == (date.today() + timedelta(days=1)).isoformat()
 
 
+def test_local_parser_next_week_weekday_is_the_following_week():
+    """'next week thursday' = the Thursday of the FOLLOWING week (not this
+    week's, not a random +7 days)."""
+    today = date.today()
+    expected = today + timedelta(days=7 + ((3 - today.weekday()) % 7))
+    assert brain._local_date("next week thursday") == expected.isoformat()
+    intent = brain._local_parse("i am going to lagos on next week thursday")
+    assert intent.intent == "fare"
+    assert intent.destination_iata == "LOS"
+    assert intent.origin_iata is None          # going TO Lagos, origin unknown
+    assert intent.date == expected.isoformat()
+
+
 def test_local_parser_bare_ordinal_day_future_this_month():
     """User asks for 'the 31st' (no month) on Aug 13 -> Aug 31 same year."""
     today = date.today()
