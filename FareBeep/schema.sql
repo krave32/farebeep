@@ -30,7 +30,11 @@ create table if not exists users (
     name              text,
     email             text,
     preferred_currency text not null default 'NGN',
-    first_seen_at     timestamptz not null default now()
+    first_seen_at     timestamptz not null default now(),
+    -- NDPA consent: when + which consent text the user accepted (set on the
+    -- booking confirmation page before payment; NULL = never consented).
+    consent_at        timestamptz,
+    consent_text_version text
 );
 
 -- ---------------------------------------------------------------------------

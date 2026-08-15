@@ -50,6 +50,10 @@ class User(Base):
     email = Column(String, nullable=True)
     preferred_currency = Column(String, default="NGN")
     first_seen_at = Column(DateTime(timezone=True), default=utcnow)
+    # NDPA consent record: timestamp + version of the consent text accepted
+    # on the booking confirmation page. NULL until the user agrees.
+    consent_at = Column(DateTime(timezone=True), nullable=True)
+    consent_text_version = Column(String, nullable=True)
 
     subscriptions = relationship("Subscription", back_populates="user",
                                  cascade="all, delete-orphan")

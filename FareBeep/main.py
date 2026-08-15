@@ -21,16 +21,18 @@ import hashlib
 import hmac
 import logging
 import os
+import uuid
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import (HTMLResponse, PlainTextResponse,
+                               RedirectResponse)
 
 from FareBeep import brain
-from FareBeep.config import (MESSAGING_PROVIDER, META_APP_SECRET,
-                             META_VERIFY_TOKEN)
+from FareBeep.config import (APP_BASE_URL, CONSENT_VERSION, MESSAGING_PROVIDER,
+                             META_APP_SECRET, META_VERIFY_TOKEN)
 from FareBeep.database import SessionLocal, init_db
 from FareBeep.iata import city_name
-from FareBeep.models import User, utcnow
+from FareBeep.models import BookingSession, User, utcnow
 from FareBeep.notifier import get_notifier
 from FareBeep.payments import verify_paystack_signature
 from FareBeep.search import LedgerSearch
@@ -319,14 +321,18 @@ def _reply_booking(db, user: User, intent: brain.Intent) -> None:
     expires = result["expires_at"].strftime("%H:%M")
     origin = city_name(origin_iata)
     destination = city_name(destination_iata)
+    # The user goes to the booking confirmation page (NOT the raw Paystack
+    # URL): it reconfirms the price breakdown + captures NDPA consent before
+    # redirecting to payment. Every booking flows through this page.
+    book_url = f"{APP_BASE_URL}/book/{session.id}"
     _say(user.phone,
          f"🔒 PRICE LOCKED for 10 minutes.\n"
          f"{origin} -> {destination} on {fare['flight_date']}\n"
          f"Airline price: ₦{fare['price']:,.0f}\n"
          f"Markup + fees: ₦{session.markup + session.processing_fee:,.0f}\n"
          f"TOTAL:         ₦{result['total_amount']:,.0f}\n\n"
-         f"Pay now (link valid until {expires} today):\n"
-         f"{result['payment_link']}\n\n"
+         f"Confirm & pay here (valid until {expires} today):\n"
+         f"{book_url}\n\n"
          f"⚠️ PAYSTACK TEST MODE - use the test card, no real money leaves "
          f"your account.\n"
          f"Miss the window? Your payment is auto-refunded - no questions.",
@@ -572,6 +578,143 @@ def health():
         return {"status": "ok", "service": "FareBeep"}
     return {"status": "ok" if probe["ok"] else "degraded",
             "service": "FareBeep", "fare_provider_probe": probe}
+
+
+# ---------------------------------------------------------------------------
+# Booking confirmation page - the ONLY place a user proceeds to payment.
+# The WhatsApp bot sends a link here instead of a raw Paystack URL. The page
+# reconfirms the quoted price (breakdown) and captures NDPA consent (version
+# + timestamp + phone) BEFORE the Paystack redirect. All bookings flow
+# through this page, so consent is always captured - no text-parsing needed.
+# ---------------------------------------------------------------------------
+_CONSENT_TEXT = (
+    "By proceeding, you agree that FareBeep may collect and process your "
+    "details (and, for ticket purchases, passenger/travel document data) "
+    "for the purpose of booking, pricing and confirming your flight, "
+    "sending you fare alerts, and contacting you about your booking. "
+    "We do not share your data with third parties for their own marketing. "
+    "You can stop alerts anytime by replying STOP. "
+    "This is our current data notice (version {version}).")
+
+
+def _booking_not_found() -> HTMLResponse:
+    return HTMLResponse("""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FareBeep - Booking</title></head>
+<body style="font-family:system-ui,sans-serif;background:#0b1220;color:#e8eef7;
+display:grid;place-items:center;min-height:100vh;margin:0">
+<div style="background:#131c2e;border:1px solid #26324a;border-radius:16px;
+padding:2.5rem;max-width:26rem;text-align:center">
+<h1>Booking not found</h1>
+<p style="color:#9fb0c9">This link is invalid or already used. Ask the bot
+for a fresh fare and booking in WhatsApp.</p>
+</div></body></html>""")
+
+
+def _booking_closed(origin: str = "", destination: str = "") -> HTMLResponse:
+    return HTMLResponse(f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FareBeep - Window closed</title></head>
+<body style="font-family:system-ui,sans-serif;background:#0b1220;color:#e8eef7;
+display:grid;place-items:center;min-height:100vh;margin:0">
+<div style="background:#131c2e;border:1px solid #26324a;border-radius:16px;
+padding:2.5rem;max-width:26rem;text-align:center">
+<h1>Price window closed</h1>
+<p style="color:#9fb0c9">The 10-minute price lock for
+{origin} &rarr; {destination} has expired. Send a new message in WhatsApp
+(e.g. &ldquo;BOOK Lagos to Abuja tomorrow&rdquo;) and I&rsquo;ll re-check
+the latest fare for you.</p>
+</div></body></html>""")
+
+
+def _booking_page(session: BookingSession) -> HTMLResponse:
+    origin = city_name(session.origin)
+    destination = city_name(session.destination)
+    airline = (session.flight_details or {}).get("airline") or "—"
+    expires = session.expires_at.strftime("%H:%M")
+    html = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FareBeep - Confirm booking</title>
+<style>
+ body {{ font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+        background:#0b1220; color:#e8eef7; display:grid; place-items:center;
+        min-height:100vh; margin:0; }}
+ .card {{ background:#131c2e; border:1px solid #26324a; border-radius:16px;
+         padding:2rem; max-width:26rem; width:100%; box-sizing:border-box; }}
+ h1 {{ font-size:1.25rem; margin:0 0 .25rem; }}
+ .route {{ color:#9fb0c9; margin:0 0 1.25rem; }}
+ .row {{ display:flex; justify-content:space-between; padding:.35rem 0;
+         border-bottom:1px solid #1f2a3f; color:#9fb0c9; }}
+ .row.total {{ border-bottom:none; color:#e8eef7; font-weight:700;
+               font-size:1.1rem; }}
+ .locked {{ font-size:.8rem; color:#6ee7a0; margin:1rem 0; }}
+ .notice {{ background:#101a2c; border:1px solid #26324a; border-radius:10px;
+           padding:.9rem; font-size:.8rem; color:#9fb0c9; line-height:1.5;
+           margin:1rem 0; }}
+ button {{ width:100%; background:#22c55e; color:#06210f; border:0;
+          border-radius:10px; padding:.85rem; font-size:1rem; font-weight:700;
+          cursor:pointer; }}
+</style></head>
+<body>
+<div class="card">
+  <h1>Confirm your booking</h1>
+  <p class="route">{origin} &rarr; {destination} &middot; {session.flight_date} &middot; {airline}</p>
+
+  <div class="row"><span>Airline price</span><span>&#8358;{session.airline_price:,.0f}</span></div>
+  <div class="row"><span>Markup + fees</span><span>&#8358;{session.markup + session.processing_fee:,.0f}</span></div>
+  <div class="row total"><span>Total to pay</span><span>&#8358;{session.total_price:,.0f}</span></div>
+
+  <p class="locked">Price locked, valid until {expires} today. Payments after
+  the window are auto-refunded.</p>
+
+  <div class="notice">{_CONSENT_TEXT.format(version=CONSENT_VERSION)}</div>
+
+  <form method="post" action="/book/{session.id}/confirm">
+    <button type="submit">I agree &amp; Proceed to Payment</button>
+  </form>
+</div>
+</body></html>"""
+    return HTMLResponse(html)
+
+
+@app.get("/book/{session_id}")
+def booking_page(session_id: uuid.UUID):
+    db = SessionLocal()
+    try:
+        session = db.get(BookingSession, session_id)
+        if session is None:
+            return _booking_not_found()
+        if session.expires_at < utcnow():
+            return _booking_closed(session.origin, session.destination)
+        return _booking_page(session)
+    finally:
+        db.close()
+
+
+@app.post("/book/{session_id}/confirm")
+def booking_confirm(session_id: uuid.UUID):
+    """Record NDPA consent for the session's user, then send them to Paystack."""
+    db = SessionLocal()
+    try:
+        session = db.get(BookingSession, session_id)
+        if session is None:
+            return _booking_not_found()
+        if session.expires_at < utcnow():
+            return _booking_closed(session.origin, session.destination)
+        user = db.get(User, session.user_id)
+        if user is not None:
+            user.consent_at = utcnow()
+            user.consent_text_version = CONSENT_VERSION
+            db.commit()
+            logger.info("Consent recorded v%s for user %s (booking %s)",
+                        CONSENT_VERSION, session.user_id, session.payment_ref)
+        return RedirectResponse(session.callback_url or "/payment/status",
+                                status_code=303)
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
