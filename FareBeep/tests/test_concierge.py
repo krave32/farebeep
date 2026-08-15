@@ -531,6 +531,70 @@ def test_natural_pick_unresolved_asks_gently(client, monkeypatch):
     assert "987654321" in main._last_fares       # list still active
 
 
+def test_bare_track_after_ranked_list_uses_listed_route(client):
+    """Bare TRACK right after a RANKED list arms the alert on the LISTED
+    route + date (the same context BOOK reuses) - it must not ask for the
+    route again."""
+    test_client, fake, ledger = client
+    main._last_fares.clear()
+    main._last_fare.clear()
+    ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
+
+    r = _post(test_client, "Lagos to Abuja tomorrow")
+    assert r.status_code == 200
+    r = _post(test_client, "TRACK")
+    assert r.status_code == 200
+    body = fake.sent[-1][1]
+    assert "Beep armed" in body
+    assert "Lagos" in body and "Abuja" in body
+
+    from FareBeep.models import Subscription
+    db = main.SessionLocal()
+    try:
+        subs = db.query(Subscription).all()
+        assert len(subs) == 1
+        assert subs[0].origin == "LOS"
+        assert subs[0].destination == "ABV"
+        assert subs[0].target_date is not None   # the listed date, not NULL
+    finally:
+        db.close()
+
+
+def test_bare_track_after_unresolved_pick_relist_uses_listed_route(
+        client, monkeypatch):
+    """THE REPORTED GAP: after an unresolved pick the bot echoes + re-lists,
+    and a following bare TRACK must continue that conversation - arming the
+    alert on the listed route, not asking for the route again."""
+    test_client, fake, ledger = client
+    main._last_fares.clear()
+    main._last_fare.clear()
+    ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
+    monkeypatch.setattr(main.brain, "resolve_pick",
+                        lambda text, fares: None)  # brain can't resolve
+
+    _post(test_client, "Lagos to Abuja tomorrow")
+    r = _post(test_client, "the purple one")     # -> echo + re-list
+    assert r.status_code == 200
+    assert "didn't quite catch" in fake.sent[-1][1]
+
+    r = _post(test_client, "TRACK")
+    assert r.status_code == 200
+    body = fake.sent[-1][1]
+    assert "Beep armed" in body
+    assert "Lagos" in body and "Abuja" in body
+
+    from FareBeep.models import Subscription
+    db = main.SessionLocal()
+    try:
+        subs = db.query(Subscription).all()
+        assert len(subs) == 1
+        assert subs[0].origin == "LOS"
+        assert subs[0].destination == "ABV"
+        assert subs[0].target_date is not None
+    finally:
+        db.close()
+
+
 def test_ranked_reply_narrated_by_ai_sent_verbatim(client, monkeypatch):
     """The ranked list is narrated by the brain ONCE - sent verbatim with no
     second personality pass that could garble the prices or numbers."""

@@ -526,18 +526,24 @@ def _reply_subscribe(db, user: User, intent: brain.Intent) -> None:
     """Set a fare-drop subscription (target price optional).
 
     Like BOOK: a bare TRACK right after a fare quote arms the alert on the
-    ROUTE + DATE the user was just quoted (never a made-up route)."""
+    ROUTE + DATE the user was just shown (never a made-up route). The route
+    lives in the single-fare context OR the active ranked list - both count
+    as "the route we were just discussing"."""
     from FareBeep.alerts import SubscriptionMonitor
     ctx = _last_fare.get(user.phone) or {}
-    origin_iata = intent.origin_iata or ctx.get("origin_iata")
-    destination_iata = intent.destination_iata or ctx.get("destination_iata")
+    list_ctx = _last_fares.get(user.phone) or {}
+    origin_iata = (intent.origin_iata or ctx.get("origin_iata")
+                   or list_ctx.get("origin_iata"))
+    destination_iata = (intent.destination_iata or ctx.get("destination_iata")
+                        or list_ctx.get("destination_iata"))
     if not (origin_iata and destination_iata):
         _say(user.phone,
              "To set a price alert, send your route, e.g. 'TRACK Lagos to "
              "Abuja below 80k' - or just say TRACK right after a fare quote.",
              user.name)
         return
-    target_date = intent.date or ctx.get("flight_date")
+    target_date = (intent.date or ctx.get("flight_date")
+                   or list_ctx.get("flight_date"))
 
     monitor = SubscriptionMonitor(db)
     monitor.subscribe(user.user_id, origin_iata, destination_iata,
