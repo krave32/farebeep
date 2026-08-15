@@ -69,20 +69,38 @@ def main():
     if not verify_connection():
         sys.exit(1)
 
-    leader = _leader_lock()
-    if leader is not None:
-        logger.info("All-in-one: holding loops lock (worker + poller active)")
-        threading.Thread(target=_run_worker, daemon=True,
-                         name="farebeep-worker").start()
-        threading.Thread(target=_run_poller, daemon=True,
-                         name="farebeep-poller").start()
-    else:
-        logger.info("All-in-one: another replica owns the loops - web only")
+    # The leader is elected by a background thread that RETRIES forever: at
+    # deploy/rollout a new replica can lose the initial race to the previous
+    # deployment (which then dies and releases the lock), leaving nobody
+    # running the loops. Retrying lets a lone replica self-heal into leader.
+    threading.Thread(target=_leader_loop, daemon=True,
+                     name="farebeep-leader").start()
 
     import uvicorn
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run("FareBeep.main:app", host="0.0.0.0", port=port,
                 log_level="info")
+
+
+def _leader_loop():
+    """Keep trying to hold the loops lock; run worker + poller while held."""
+    import time
+    while True:
+        conn = _leader_lock()
+        if conn is None:
+            logger.info("All-in-one: another replica owns the loops - "
+                        "web only (retrying)")
+            time.sleep(15)
+            continue
+        logger.info("All-in-one: holding loops lock (worker + poller active)")
+        threading.Thread(target=_run_worker, daemon=True,
+                         name="farebeep-worker").start()
+        threading.Thread(target=_run_poller, daemon=True,
+                         name="farebeep-poller").start()
+        # Hold the locked connection (and therefore the advisory lock) for
+        # the lifetime of this process - it dies with the backend.
+        while True:
+            time.sleep(3600)
 
 
 if __name__ == "__main__":
