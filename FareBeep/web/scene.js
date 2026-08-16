@@ -12,6 +12,10 @@ if (art && frame && !reduceMotion) {
     { el: frame.querySelector('.chat-orbital'), k: 19, z: 110 },
     { el: frame.querySelector('.beep-card'), k: -17, z: 90 }
   ].filter(l => l.el);
+  const pins = Array.from(frame.querySelectorAll('.pin'));
+  for (let i = 0; i < pins.length; i++) {
+    layers.push({ el: pins[i], k: 8 + (i % 5) * 3.5, z: 30 + (i % 8) * 8 });
+  }
 
   let tx = 0, ty = 0, cx = 0, cy = 0;
   let dragging = false, panX = 0, panY = 0, lastX = 0, lastY = 0;
