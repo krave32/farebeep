@@ -1,7 +1,7 @@
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const art = document.getElementById('hero-art');
-const frame = document.getElementById('art-frame');
+const frame = art;
 
 if (art && frame && !reduceMotion) {
   const layers = [
