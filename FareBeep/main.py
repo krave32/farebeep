@@ -30,7 +30,8 @@ from fastapi.responses import (HTMLResponse, PlainTextResponse,
 
 from FareBeep import brain, chatstate
 from FareBeep.config import (APP_BASE_URL, CONSENT_VERSION, MESSAGING_PROVIDER,
-                             META_APP_SECRET, META_VERIFY_TOKEN)
+                             META_APP_SECRET, META_VERIFY_TOKEN,
+                             REQUOTE_TOLERANCE_NGN)
 from FareBeep.database import SessionLocal, init_db
 from FareBeep.iata import city_name
 from FareBeep.models import BookingSession, User, utcnow
@@ -150,6 +151,13 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                                    picked_fare=pick)
                 return
 
+            # REQUOTE GATE: after "the price moved to ₦X - still lock it?",
+            # a bare yes/book answer proceeds with the already-live-quoted
+            # fare; a no/cancel politely aborts. Anything naming a city or
+            # date is a fresh request - it falls through to the brain.
+            if _try_requote_answer(db, user, text):
+                return
+
             # CONTINUATION: the user answered our follow-up question with a
             # bare city ("abuja" after "where will you be flying from?") -
             # fill the missing piece and search, like a person would.
@@ -225,6 +233,63 @@ def _say(phone: str, msg: str, user_name: str = None,
         notifier.send_text(phone, msg)
         return
     notifier.send_text(phone, brain.compose_reply(msg, user_name=user_name))
+
+
+_YES_WORDS = {"yes", "yeah", "yep", "y", "sure", "ok", "okay", "alright",
+              "book", "lock", "proceed", "confirm", "continue", "go", "ahead"}
+_NO_WORDS = {"no", "nope", "nah", "cancel", "forget", "never", "stop"}
+
+
+def _try_requote_answer(db, user: User, text: str) -> bool:
+    """Answer to the price-move question ("the price moved to ₦X - still
+    lock it?"). YES/BOOK -> book the already re-quoted fare; NO/CANCEL ->
+    politely abort. Returns True when handled. A message naming a city or
+    a date is a fresh request, not an answer - it falls through."""
+    pending = chatstate.get_pending_requote(db, user.phone)
+    if not pending:
+        return False
+    if brain.single_city(text) is not None or brain.has_date(text):
+        return False
+    words = re.findall(r"[a-z]+", text.lower())
+    if not words:
+        return False
+    if all(w in _YES_WORDS for w in words):
+        chatstate.clear_pending_requote(db, user.phone)
+        _reply_requoted_booking(db, user, pending)
+        return True
+    if all(w in _NO_WORDS for w in words):
+        chatstate.clear_pending_requote(db, user.phone)
+        _say(user.phone,
+             "No problem - that quote is gone anyway. Ask me for a fresh "
+             "search and I'll check the latest price.",
+             user.name)
+        return True
+    return False
+
+
+def _reply_requoted_booking(db, user: User, pending: dict) -> None:
+    """Book the fare that was LIVE re-quoted before the price-move question
+    (no re-fetch - it is seconds old). Surge is still refused."""
+    fare = pending.get("fare") or {}
+    origin_iata = pending.get("origin_iata")
+    destination_iata = pending.get("destination_iata")
+    flight_date = pending.get("flight_date")
+    if not (origin_iata and destination_iata and flight_date and fare):
+        _say(user.phone,
+             "That quote has expired - ask me for a fresh search and I'll "
+             "check the latest price.",
+             user.name)
+        return
+    if fare.get("above_guardrail"):
+        _say(user.phone,
+             "That fare is at a surge price right now - I can't lock it "
+             "safely. Try again in a bit, or TRACK it and I'll Beep you "
+             "when it normalises.",
+             user.name)
+        return
+    _create_and_send_booking(db, user, origin_iata, destination_iata,
+                             flight_date, fare,
+                             flight_iata=fare.get("flight_number"))
 
 
 def _fill_pending_fare(db, user: User, text: str) -> bool:
@@ -368,6 +433,8 @@ def _looks_like_pick(text: str, fares: list) -> bool:
 
 
 def _reply_fare(db, user: User, intent: brain.Intent) -> None:
+    # A fresh search supersedes any open price-move question.
+    chatstate.clear_pending_requote(db, user.phone)
     # Pass 2: destination-only with a date -> search from the user's default
     # hub (Lagos - Nigeria's main base). The fare reply names both cities,
     # so any wrong assumption is visible and correctable.
@@ -487,6 +554,7 @@ def _reply_booking(db, user: User, intent: brain.Intent,
             return
 
     search = LedgerSearch(db)
+    expected_price = None
     if picked_fare is not None:
         # Force-refresh the ranked list live and re-locate the picked flight
         # by its number (prices move - never book the stale list price).
@@ -508,6 +576,14 @@ def _reply_booking(db, user: User, intent: brain.Intent,
                  "ask me for a fresh search.",
                  user.name)
             return
+        expected_price = picked_fare.get("price")
+        if fare.get("above_guardrail"):
+            _say(user.phone,
+                 "That fare is at a surge price right now - I can't lock it "
+                 "safely. Try again in a bit, or TRACK it and I'll Beep you "
+                 "when it normalises.",
+                 user.name)
+            return
     else:
         fare = search.search(origin_iata, destination_iata, flight_date,
                              force_refresh=True)
@@ -524,13 +600,50 @@ def _reply_booking(db, user: User, intent: brain.Intent,
                  "when it normalises.",
                  user.name)
             return
+        expected_price = ctx.get("price") if ctx else None
 
+    # THE PRICE-MOVE HANDCHECK: the live re-quote may differ from what the
+    # user was shown. Within the tolerance (the natural volatility buffer)
+    # book silently; beyond it, ASK first - never take a silent price jump.
+    if (expected_price is not None
+            and abs(fare["price"] - expected_price) > REQUOTE_TOLERANCE_NGN):
+        chatstate.clear_last_fares(db, user.phone)   # superseded by the question
+        chatstate.set_pending_requote(db, user.phone, {
+            "origin_iata": origin_iata,
+            "destination_iata": destination_iata,
+            "flight_date": fare["flight_date"],
+            "fare": fare,
+        })
+        _say(user.phone,
+             f"The fare moved from ₦{expected_price:,.0f} to "
+             f"₦{fare['price']:,.0f} while you were deciding - the airline "
+             f"repriced it. Still lock it at the new price? Reply YES or "
+             f"BOOK - or NO to cancel.",
+             user.name)
+        return
+
+    _create_and_send_booking(db, user, origin_iata, destination_iata,
+                             fare["flight_date"], fare,
+                             flight_iata=fare.get("flight_number")
+                             or intent.flight)
+
+    if picked_fare is not None:
+        # A pick is consumed by booking: a stray "2" later must not rebook.
+        chatstate.clear_last_fares(db, user.phone)
+
+
+def _create_and_send_booking(db, user: User, origin_iata: str,
+                             destination_iata: str, flight_date: str,
+                             fare: dict, flight_iata: str = None) -> None:
+    """Create the 10-minute booking session and send the price-locked
+    message with the confirmation-page link. Shared by the direct BOOK flow
+    and the re-quoted "yes" flow."""
     bookings = BookingService(db)
     try:
         result = bookings.create_booking(
             user.user_id, origin_iata, destination_iata,
-            fare["flight_date"], fare["price"],
-            flight_iata=fare.get("flight_number") or intent.flight,
+            flight_date, fare["price"],
+            flight_iata=flight_iata,
             email=user.email or f"{user.phone.replace('+', '')}@farebeep.ng",
             airline=fare.get("airline"),
             source="serpapi")
@@ -538,10 +651,6 @@ def _reply_booking(db, user: User, intent: brain.Intent,
         logger.error("Booking creation failed: %s", e)
         _say(user.phone, "Payment link could not be created. Try again in a minute.", user.name)
         return
-
-    if picked_fare is not None:
-        # A pick is consumed by booking: a stray "2" later must not rebook.
-        chatstate.clear_last_fares(db, user.phone)
 
     session = result["session"]
     expires = result["expires_at"].strftime("%H:%M")
@@ -553,7 +662,7 @@ def _reply_booking(db, user: User, intent: brain.Intent,
     book_url = f"{APP_BASE_URL}/book/{session.id}"
     _say(user.phone,
          f"🔒 PRICE LOCKED for 10 minutes.\n"
-         f"{origin} -> {destination} on {fare['flight_date']}\n"
+         f"{origin} -> {destination} on {flight_date}\n"
          f"Airline price: ₦{fare['price']:,.0f}\n"
          f"Markup + fees: ₦{session.markup + session.processing_fee:,.0f}\n"
          f"TOTAL:         ₦{result['total_amount']:,.0f}\n\n"
@@ -777,20 +886,38 @@ async def paystack_webhook(request: Request):
             pnr = outcome.get("pnr") or "FB-????"
             _notify_session_user(
                 session,
-                f"🎫 TICKET ISSUED!\nPNR: {pnr}\n"
+                f"✅ BOOKING CONFIRMED - payment received!\n"
+                f"PNR: {pnr} (provisional)\n"
                 f"{city_name(session.origin)} -> {city_name(session.destination)} "
                 f"{session.flight_date}\n"
                 f"Paid: ₦{session.total_price:,.0f}\n"
-                f"Your e-ticket is on its way. Safe travels!")
+                f"Your e-ticket is issued once the airline confirms "
+                f"availability. Safe travels!")
         elif outcome["outcome"] == "refund_required":
             _notify_session_user(
                 session,
                 "Payment was successful, but the 10-minute window closed. "
-                "Our team will contact you for a refund or a price-match.")
+                "Your refund is being processed automatically - no "
+                "questions.")
+            # THE REFUND PROMISE: the airline was never ticketed, so the
+            # money goes back via the Paystack API - not just an alert.
+            refunded = False
+            try:
+                from FareBeep.payments import refund_paystack_transaction
+                refund_paystack_transaction(reference)
+                refunded = True
+            except Exception as e:
+                logger.error("Auto-refund failed for %s: %s", reference, e)
+            if refunded:
+                tail = "No action needed - Paystack refund issued."
+            else:
+                tail = ("MANUAL REFUND REQUIRED - the Paystack refund call "
+                        "failed.")
             _notify_admin(
-                f"REFUND REQUIRED - booking {reference} was paid AFTER its "
-                f"10-minute lock expired ({session.expires_at}). Airline API "
-                f"was NOT called. Refund or price-match the customer.")
+                f"{'AUTO-REFUNDED' if refunded else 'REFUND FAILED'}: "
+                f"{reference} was paid after its 10-minute lock expired "
+                f"({session.expires_at}); the airline API was NOT called. "
+                f"{tail}")
         return {"ok": True, "outcome": outcome["outcome"]}
     finally:
         db.close()
@@ -826,6 +953,9 @@ _CONSENT_TEXT = (
     "sending you fare alerts, and contacting you about your booking. "
     "We do not share your data with third parties for their own marketing. "
     "You can stop alerts anytime by replying STOP. "
+    "This page confirms your INTENT to purchase the flight shown at the "
+    "quoted total - the price is locked for 10 minutes, and your ticket is "
+    "issued after payment is confirmed by our payment partner. "
     "This is our current data notice (version {version}).")
 
 

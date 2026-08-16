@@ -99,6 +99,9 @@ class ChatState(Base):
     last_fares = Column(JSON, nullable=True)     # {origin_iata, destination_iata,
                                                  #  flight_date, fares: [...]}
     pending_fare = Column(JSON, nullable=True)   # {origin_iata, destination_iata, date}
+    pending_requote = Column(JSON, nullable=True)  # {origin_iata, destination_iata,
+                                                   #  flight_date, fare} - waiting for the
+                                                   #  user's "yes" after a price move
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 

@@ -79,3 +79,15 @@ def set_pending_fare(db, phone: str, ctx: dict) -> None:
 
 def clear_pending_fare(db, phone: str) -> None:
     _write(db, phone, "pending_fare", None)
+
+
+def get_pending_requote(db, phone: str) -> Optional[dict]:
+    return _read(db, phone, "pending_requote")
+
+
+def set_pending_requote(db, phone: str, ctx: dict) -> None:
+    _write(db, phone, "pending_requote", ctx)
+
+
+def clear_pending_requote(db, phone: str) -> None:
+    _write(db, phone, "pending_requote", None)

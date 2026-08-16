@@ -1,6 +1,7 @@
 """WEBHOOK SURFACE - Meta handshake + hmac receiver + Paystack verification."""
 import hashlib
 import hmac
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from FareBeep import main
-from FareBeep.models import Base
+from FareBeep.models import Base, utcnow
 
 
 @pytest.fixture
@@ -95,6 +96,42 @@ def test_paystack_webhook_rejects_bad_signature(client):
     r = client.post("/webhook/paystack", content=b"{}",
                     headers={"x-paystack-signature": "nope"})
     assert r.status_code == 403
+
+
+def test_expired_payment_auto_refunds(client, monkeypatch):
+    """THE REFUND PROMISE: a payment landing after the 10-minute window is
+    auto-refunded via the Paystack API - not just an admin alert."""
+    refunds = []
+    monkeypatch.setattr("FareBeep.payments.PAYSTACK_SECRET_KEY",
+                        "test-paystack-key")
+    monkeypatch.setattr(
+        "FareBeep.payments.refund_paystack_transaction",
+        lambda ref: refunds.append(ref) or {"status": True})
+
+    class _LateSession:
+        payment_ref = "FB-LATE1"
+        user_id = None                      # no user row -> message skipped
+        expires_at = utcnow() + timedelta(minutes=-1)
+        origin, destination = "LOS", "ABV"
+        total_price = 104670.0
+
+    class _FakeService:
+        def __init__(self, db):
+            pass
+
+        def settle_payment(self, reference, status):
+            return {"outcome": "refund_required", "session": _LateSession()}
+
+    monkeypatch.setattr(main, "BookingService", _FakeService)
+
+    body = (b'{"event":"charge.success","data":'
+            b'{"reference":"FB-LATE1","status":"success"}}')
+    sig = hmac.new(b"test-paystack-key", body, hashlib.sha512).hexdigest()
+    r = client.post("/webhook/paystack", content=body,
+                    headers={"x-paystack-signature": sig})
+    assert r.status_code == 200
+    assert r.json()["outcome"] == "refund_required"
+    assert refunds == ["FB-LATE1"]          # Paystack was asked to refund
 
 
 def test_health(client):

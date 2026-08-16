@@ -184,3 +184,28 @@ def init_db(base) -> None:
       auto-idempotent fallback for development.
     """
     base.metadata.create_all(bind=get_engine())
+    _apply_additive_migrations()
+
+
+def _apply_additive_migrations() -> None:
+    """Additive column migrations: create_all only creates missing TABLES,
+    never new columns on tables that already shipped. Each entry is an
+    idempotent ALTER ... ADD COLUMN IF NOT EXISTS (Postgres-only - SQLite
+    lacks IF NOT EXISTS here, and the test suite builds fresh schemas)."""
+    if DATABASE_PROVIDER != "Supabase":
+        return
+    additive = [
+        ("chat_state", "pending_requote", "JSON"),
+    ]
+    engine = get_engine()
+    with engine.begin() as conn:
+        for table, column, ddl_type in additive:
+            try:
+                conn.execute(text(
+                    f"ALTER TABLE {table} "
+                    f"ADD COLUMN IF NOT EXISTS {column} {ddl_type}"))
+                logger.info("Additive migration OK: %s.%s %s",
+                            table, column, ddl_type)
+            except Exception as e:
+                logger.error("Additive migration failed %s.%s: %s",
+                             table, column, e)

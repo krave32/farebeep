@@ -129,7 +129,35 @@ def verify_paystack_signature(raw_body: bytes, signature: str,
     return hmac.compare_digest(expected, signature or "")
 
 
+# ---------------------------------------------------------------------------
+# Refunds - the 10-minute promise enforced in settlement, not in ops
+# ---------------------------------------------------------------------------
+def refund_paystack_transaction(payment_ref: str, secret_key: str = None,
+                                http_client: httpx.Client = None) -> dict:
+    """Ask Paystack to refund a transaction (POST /refunds).
+
+    Called when a charge.success webhook lands AFTER the 10-minute lock
+    expired - the airline was never ticketed, so the money must go back.
+    Returns Paystack's response JSON; raises RuntimeError on API failure so
+    the caller can escalate (refund failed -> human action).
+    """
+    secret_key = secret_key or PAYSTACK_SECRET_KEY
+    if not secret_key:
+        raise RuntimeError("PAYSTACK_SECRET_KEY not set - cannot refund")
+    client = http_client or httpx.Client(timeout=15.0)
+    resp = client.post(
+        f"{PAYSTACK_API_BASE}/refunds",
+        headers={"Authorization": f"Bearer {secret_key}"},
+        json={"transaction": payment_ref},
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get("status"):
+        raise RuntimeError(f"Paystack refund failed: {data}")
+    return data
+
+
 __all__ = [
     "calculate_final_price", "initialize_paystack_payment",
-    "verify_paystack_signature",
+    "verify_paystack_signature", "refund_paystack_transaction",
 ]

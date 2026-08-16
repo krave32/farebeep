@@ -138,6 +138,11 @@ TRACKING_POLL_HOURS = _get_int("TRACKING_POLL_HOURS", 4)
 # Price guardrail: a one-way domestic fare above this (₦NGN) is treated as
 # an anomaly - the bot says prices are unusually high instead of quoting it.
 FARE_PRICE_GUARDRAIL_NGN = _get_float("FARE_PRICE_GUARDRAIL_NGN", 250000.0)
+# The live re-quote tolerance: when BOOK reveals a price that moved by MORE
+# than this (₦NGN) vs what the user was shown, the bot re-confirms first
+# ("the price moved to ₦X - still lock it?"). Smaller moves are the natural
+# volatility buffer - the booking proceeds silently.
+REQUOTE_TOLERANCE_NGN = _get_float("REQUOTE_TOLERANCE_NGN", 1000.0)
 
 # --- Public app URL + consent ---
 # APP_BASE_URL is the public origin used to build user-facing links (booking
@@ -146,4 +151,4 @@ APP_BASE_URL = _get("APP_BASE_URL", "http://localhost:8000")
 # Version tag of the consent text shown on the booking confirmation page.
 # Bump it when the wording changes; users with an older version get asked
 # again on their next booking (NDPA re-consent).
-CONSENT_VERSION = _get("CONSENT_VERSION", "v1-2026-08-15")
+CONSENT_VERSION = _get("CONSENT_VERSION", "v2-2026-08-16")

@@ -693,3 +693,71 @@ def test_ranked_reply_narrated_by_ai_sent_verbatim(client, monkeypatch):
     r = _post(test_client, "Lagos to Abuja tomorrow")
     assert r.status_code == 200
     assert fake.sent[-1][1] == narrated     # verbatim, not re-humanized
+
+
+def test_requote_asks_when_price_moves_before_locking(client, monkeypatch):
+    """THE PRICE-MOVE HANDCHECK: when the live re-check at BOOK finds the
+    picked fare moved beyond the tolerance, the bot ASKS before locking -
+    it never silently charges the new price."""
+    test_client, fake, ledger = client
+    ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
+    calls = {}
+    _install_fake_bookings(monkeypatch, calls)
+
+    _post(test_client, "Lagos to Abuja tomorrow")
+    moved = list(_ranked_fares())
+    moved[1] = dict(moved[1])              # Air Peace (option 2) repriced
+    moved[1]["price"] = 140000.0
+    ledger["inst"].fares = moved
+
+    r = _post(test_client, "2")
+    assert r.status_code == 200
+    body = fake.sent[-1][1]
+    assert "moved" in body and "140,000" in body
+    assert calls == {}                     # nothing booked yet
+
+    r = _post(test_client, "yes")
+    assert r.status_code == 200
+    assert calls["airline_price"] == 140000.0, calls
+    assert calls["flight_iata"] == "P4 111", calls
+    assert "TEST MODE" in fake.sent[-1][1]
+
+
+def test_requote_no_aborts_without_booking(client, monkeypatch):
+    """Saying NO to the price move aborts politely - no booking, no charge."""
+    test_client, fake, ledger = client
+    ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
+    calls = {}
+    _install_fake_bookings(monkeypatch, calls)
+
+    _post(test_client, "Lagos to Abuja tomorrow")
+    moved = list(_ranked_fares())
+    moved[1] = dict(moved[1])
+    moved[1]["price"] = 140000.0
+    ledger["inst"].fares = moved
+    _post(test_client, "2")
+
+    r = _post(test_client, "no")
+    assert r.status_code == 200
+    assert calls == {}
+    assert "No problem" in fake.sent[-1][1]
+
+
+def test_requote_small_move_books_silently(client, monkeypatch):
+    """A move within the ₦1,000 tolerance (natural volatility) books
+    silently - no question, no friction."""
+    test_client, fake, ledger = client
+    ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
+    calls = {}
+    _install_fake_bookings(monkeypatch, calls)
+
+    _post(test_client, "Lagos to Abuja tomorrow")
+    moved = list(_ranked_fares())
+    moved[1] = dict(moved[1])
+    moved[1]["price"] = 119000.0           # +500: within tolerance
+    ledger["inst"].fares = moved
+
+    _post(test_client, "2")
+    assert calls["airline_price"] == 119000.0, calls
+    assert "TEST MODE" in fake.sent[-1][1]
+    assert "moved" not in fake.sent[-1][1]
