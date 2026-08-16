@@ -85,6 +85,24 @@ class Subscription(Base):
 
 
 # ---------------------------------------------------------------------------
+# chat_state - per-chat conversational memory (DB-backed, survives deploys)
+# One row per phone; the last quoted fare, last ranked list and any pending
+# follow-up question. JSON columns so the schema never changes with features.
+# ---------------------------------------------------------------------------
+class ChatState(Base):
+    __tablename__ = "chat_state"
+
+    id = Column(Integer, primary_key=True)
+    phone = Column(String, unique=True, index=True)
+    last_fare = Column(JSON, nullable=True)      # {origin_iata, destination_iata,
+                                                 #  flight_date, price, airline}
+    last_fares = Column(JSON, nullable=True)     # {origin_iata, destination_iata,
+                                                 #  flight_date, fares: [...]}
+    pending_fare = Column(JSON, nullable=True)   # {origin_iata, destination_iata, date}
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+# ---------------------------------------------------------------------------
 # fare_ledger - THE SHARED LEDGER (community cache, 15-min TTL)
 # One row per (origin, destination, flight_date). Upsert target for search.py.
 # ---------------------------------------------------------------------------
@@ -204,6 +222,6 @@ class StatusEvent(Base):
 
 __all__ = [
     "Base", "utcnow",
-    "User", "Subscription", "FareLedger", "FxRate",
+    "User", "Subscription", "ChatState", "FareLedger", "FxRate",
     "BookingSession", "SessionStatus", "StatusWatch", "StatusEvent",
 ]

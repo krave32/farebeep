@@ -28,7 +28,7 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import (HTMLResponse, PlainTextResponse,
                                RedirectResponse)
 
-from FareBeep import brain
+from FareBeep import brain, chatstate
 from FareBeep.config import (APP_BASE_URL, CONSENT_VERSION, MESSAGING_PROVIDER,
                              META_APP_SECRET, META_VERIFY_TOKEN)
 from FareBeep.database import SessionLocal, init_db
@@ -46,20 +46,10 @@ app = FastAPI(title="FareBeep - Transactional Utility")
 
 notifier = get_notifier()
 
-# Per-chat memory of the LAST quoted fare {phone: {origin_iata,
-# destination_iata, flight_date, price, airline}}. A bare "BOOK" right after
-# a quote books THAT route + date (the bot never silently books today).
-_last_fare: dict = {}
-
-# Per-chat memory of the LAST RANKED fare list {phone: {origin_iata,
-# destination_iata, flight_date, fares: [...]}}. A bare "1"/"2"/"3" reply
-# picks and locks THAT fare (the "reply 1, 2 or 3 to lock" flow).
-_last_fares: dict = {}
-
-# Per-chat memory of a PARTIAL fare we asked a follow-up about {phone:
-# {origin_iata, destination_iata, date}} - filled when the user answers the
-# follow-up with a bare city (e.g. we asked "where from?", they reply "abuja").
-_pending_fare: dict = {}
+# Per-chat conversational memory lives in the `chat_state` table (see
+# FareBeep/chatstate.py) - NOT in RAM, so it survives deploys/restarts and
+# works from any replica. Last quoted fare, last ranked list, and any
+# pending follow-up question are read/written there on every turn.
 
 
 @app.on_event("startup")
@@ -141,16 +131,17 @@ def _handle_incoming_message(phone: str, text: str) -> None:
             # only when an active list exists AND the message is the number
             # (or "number 2" / "the 2nd one"). Without a list, a bare number
             # falls through to the brain as a DATE - never intercepted.
-            pick = _try_pick(text, phone)
+            pick = _try_pick(db, text, phone)
             if pick is not None:
                 if pick == "out_of_range":
-                    n = len(_last_fares.get(phone, {}).get("fares", []))
+                    n = len((chatstate.get_last_fares(db, phone) or {})
+                            .get("fares", []))
                     _say(phone, f"I only showed {n} option"
                          + ("s" if n != 1 else "")
                          + ". Reply 1-" + str(n) + ", or ask me for a new search.",
                          user.name)
                 elif pick == "unclear":
-                    ctx = _last_fares.get(phone) or {}
+                    ctx = chatstate.get_last_fares(db, phone) or {}
                     msg = brain.compose_unclear_pick_reply(
                         text, ctx.get("fares") or [], user_name=user.name)
                     _say(user.phone, msg, user.name, humanized=True)
@@ -176,7 +167,7 @@ def _handle_incoming_message(phone: str, text: str) -> None:
 
             if intent.intent == "fare":
                 if intent.has_route:
-                    _pending_fare.pop(user.phone, None)   # superseded by a full route
+                    chatstate.clear_pending_fare(db, user.phone)  # superseded by a full route
                     _reply_fare(db, user, intent)
                 elif intent.destination_iata and intent.date and not intent.origin_iata:
                     # "Find me a flight to Abj for next tuesday" - destination
@@ -185,21 +176,21 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                     # cannot also be the origin - that would be Lagos->Lagos.
                     # Ask where they're flying from instead.
                     if intent.destination_iata == "LOS":
-                        _ask_missing_info(user, intent)
+                        _ask_missing_info(db, user, intent)
                     else:
                         _reply_fare(db, user, intent)
                 elif intent.is_partial:
-                    _ask_missing_info(user, intent)
+                    _ask_missing_info(db, user, intent)
                 else:
                     _say(user.phone, _help_text(), user.name)
             elif intent.intent == "book":
                 # BOOK after a fare quote: the route/date the user discussed
-                # live in _last_fare (per-chat context), so a bare "BOOK"
+                # live in the per-chat context (chat_state), so a bare "BOOK"
                 # books exactly what was quoted - never silently today.
-                if intent.has_route or user.phone in _last_fare:
+                if intent.has_route or chatstate.get_last_fare(db, user.phone) is not None:
                     _reply_booking(db, user, intent)
                 elif intent.is_partial:
-                    _ask_missing_info(user, intent)
+                    _ask_missing_info(db, user, intent)
                 else:
                     _say(user.phone,
                          "To book: send your route, e.g. 'BOOK Lagos to "
@@ -242,7 +233,7 @@ def _fill_pending_fare(db, user: User, text: str) -> bool:
     city. Fill the missing slot and run the search. Returns True when
     handled. Only fires for a clean single-city answer with no new date -
     anything richer is a fresh request for the brain."""
-    pending = _pending_fare.get(user.phone)
+    pending = chatstate.get_pending_fare(db, user.phone)
     if not pending:
         return False
     iata = brain.single_city(text)
@@ -259,7 +250,7 @@ def _fill_pending_fare(db, user: User, text: str) -> bool:
         return False
     if not (origin_iata and destination_iata and date_):
         return False
-    _pending_fare.pop(user.phone, None)
+    chatstate.clear_pending_fare(db, user.phone)
     intent = brain.Intent(intent="fare",
                           origin=city_name(origin_iata),
                           destination=city_name(destination_iata),
@@ -270,17 +261,17 @@ def _fill_pending_fare(db, user: User, text: str) -> bool:
     return True
 
 
-def _ask_missing_info(user: User, intent: brain.Intent) -> None:
+def _ask_missing_info(db, user: User, intent: brain.Intent) -> None:
     """Pass 2 follow-up: the extraction was partial - ask for the missing
     pieces like a human agent would, never show a blank error. For fare
-    partials we remember what we already know so the user's next bare-city
-    answer completes the search (_fill_pending_fare)."""
+    partials we remember what we already know (chat_state) so the user's
+    next bare-city answer completes the search (_fill_pending_fare)."""
     if intent.intent == "fare":
-        _pending_fare[user.phone] = {
+        chatstate.set_pending_fare(db, user.phone, {
             "origin_iata": intent.origin_iata,
             "destination_iata": intent.destination_iata,
             "date": intent.date,
-        }
+        })
     dest = city_name(intent.destination_iata) if intent.destination_iata else None
     origin = city_name(intent.origin_iata) if intent.origin_iata else None
     if dest and not origin and not intent.date:
@@ -306,12 +297,12 @@ def _get_or_create_user(db, phone: str) -> User:
     return user
 
 
-def _try_pick(text: str, phone: str):
+def _try_pick(db, text: str, phone: str):
     """Interpret a reply as a ranked-list pick. Returns the picked fare dict,
     "out_of_range" when the number exceeds the list, "unclear" when the reply
     looks like a pick but no option resolves, or None to fall through to the
     brain (no active list, or not a pick-shaped message)."""
-    ctx = _last_fares.get(phone)
+    ctx = chatstate.get_last_fares(db, phone)
     if not ctx or not ctx.get("fares"):
         return None
     m = _PICK_RE.search(text.strip())
@@ -408,13 +399,13 @@ def _reply_fare(db, user: User, intent: brain.Intent) -> None:
     if len(fares) == 1:
         # Thin route: one result - keep the classic single-fare reply.
         fare = fares[0]
-        _last_fare[user.phone] = {
+        chatstate.set_last_fare(db, user.phone, {
             "origin_iata": origin_iata,
             "destination_iata": intent.destination_iata,
             "flight_date": fare["flight_date"],
             "price": fare["price"],
             "airline": fare["airline"],
-        }
+        })
         _say(user.phone,
              f"Fare {city_name(origin_iata)} -> "
              f"{city_name(intent.destination_iata)} {fare['flight_date']}:\n"
@@ -428,12 +419,12 @@ def _reply_fare(db, user: User, intent: brain.Intent) -> None:
     # Ranked list - one option per airline, NARRATED by the brain so it reads
     # like a person presenting choices, not a menu. The numbered options stay
     # pickable (reply 1, 2 or 3 - or just say the airline).
-    _last_fares[user.phone] = {
+    chatstate.set_last_fares(db, user.phone, {
         "origin_iata": origin_iata,
         "destination_iata": intent.destination_iata,
         "flight_date": fares[0]["flight_date"],
         "fares": fares,
-    }
+    })
     origin = city_name(origin_iata)
     destination = city_name(intent.destination_iata)
     msg = brain.compose_ranked_reply(
@@ -466,8 +457,8 @@ def _reply_booking(db, user: User, intent: brain.Intent,
     LAST fare quote in this chat (so "BOOK" right after a quote books that
     flight). With neither, the bot ASKS - it never silently books today.
     """
-    ctx = _last_fare.get(user.phone) or {}
-    list_ctx = _last_fares.get(user.phone) or {}
+    ctx = chatstate.get_last_fare(db, user.phone) or {}
+    list_ctx = chatstate.get_last_fares(db, user.phone) or {}
     if picked_fare is not None:
         origin_iata = list_ctx.get("origin_iata")
         destination_iata = list_ctx.get("destination_iata")
@@ -550,7 +541,7 @@ def _reply_booking(db, user: User, intent: brain.Intent,
 
     if picked_fare is not None:
         # A pick is consumed by booking: a stray "2" later must not rebook.
-        _last_fares.pop(user.phone, None)
+        chatstate.clear_last_fares(db, user.phone)
 
     session = result["session"]
     expires = result["expires_at"].strftime("%H:%M")
@@ -590,8 +581,8 @@ def _reply_subscribe(db, user: User, intent: brain.Intent) -> None:
     lives in the single-fare context OR the active ranked list - both count
     as "the route we were just discussing"."""
     from FareBeep.alerts import SubscriptionMonitor
-    ctx = _last_fare.get(user.phone) or {}
-    list_ctx = _last_fares.get(user.phone) or {}
+    ctx = chatstate.get_last_fare(db, user.phone) or {}
+    list_ctx = chatstate.get_last_fares(db, user.phone) or {}
     origin_iata = (intent.origin_iata or ctx.get("origin_iata")
                    or list_ctx.get("origin_iata"))
     destination_iata = (intent.destination_iata or ctx.get("destination_iata")
