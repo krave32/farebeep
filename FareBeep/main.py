@@ -1139,6 +1139,11 @@ def payment_status(reference: str = ""):
 # ---------------------------------------------------------------------------
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
+import mimetypes
+
+mimetypes.add_type("image/webp", ".webp")
+mimetypes.add_type("image/avif", ".avif")
+
 app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
 
 

@@ -19,12 +19,12 @@ svg{flex:none}
 
 .site-header{display:flex;align-items:center;justify-content:space-between;gap:1.5rem;max-width:80rem;margin:0 auto;padding:1.25rem 2rem}
 .site-brand{display:flex;align-items:center;gap:.6rem}
-.brand-mark{width:2.2rem;height:2.2rem;color:var(--orange);display:block;will-change:transform}
+.brand-mark{width:2.7rem;height:2.7rem;color:var(--orange);display:block;will-change:transform}
 .brand-logo{display:inline-flex;perspective:400px;animation:floatLogo 3.4s ease-in-out infinite}
 @keyframes floatLogo{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
-.brand-word{font-weight:700;font-size:1.45rem;letter-spacing:-.03em;display:flex;align-items:baseline;gap:.15rem}
+.brand-word{font-weight:700;font-size:1.65rem;letter-spacing:-.03em;display:flex;align-items:baseline;gap:.15rem}
 .brand-word em{font-family:var(--font-serif);font-style:italic;font-weight:600;color:var(--orange)}
-.brand-word small{font-family:var(--font-mono);font-weight:600;font-size:.5rem;letter-spacing:.1em;color:var(--muted);margin-left:.35rem;display:none}
+.brand-word small{font-family:var(--font-mono);font-weight:600;font-size:.58rem;letter-spacing:.1em;color:var(--muted);margin-left:.4rem;display:none}
 @media(min-width:640px){.brand-word small{display:inline}}
 .site-nav{display:flex;gap:1.6rem}
 .nav-link{font-family:var(--font-mono);font-size:.68rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
@@ -106,22 +106,22 @@ h2{font-size:clamp(2.1rem,4.2vw,3.9rem)}
 .pin-quo{left:67%;top:67%}
 @media(max-width:640px){.pin{display:none}}
 
-.chat-orbital{z-index:3;position:absolute;left:2.4rem;bottom:5.2rem;width:12.5rem;background:#fffdf8;border-radius:.48rem;box-shadow:0 16px 28px #142d3b24;padding:.8rem .9rem;transform-style:preserve-3d}
+.chat-orbital{z-index:3;position:absolute;left:2.4rem;bottom:6.4rem;width:12.5rem;background:#fffdf8;border-radius:.48rem;box-shadow:0 16px 28px #142d3b24;padding:.8rem .9rem;transform-style:preserve-3d}
 .chat-row{display:flex;align-items:flex-start;gap:.5rem;margin-bottom:.35rem}
 .who{font-family:var(--font-mono);font-size:.5rem;font-weight:600;letter-spacing:.1em;padding:.12rem .3rem;border-radius:.2rem;margin-top:.2rem;flex:none}
 .who-you{background:var(--mint-soft);color:#154f4b}
 .chat-row p{font-weight:600;font-size:.86rem}
 .chat-meta{font-family:var(--font-mono);font-size:.56rem;color:var(--muted);letter-spacing:.05em}
 
-.beep-card{z-index:3;position:absolute;right:1.9rem;bottom:2.1rem;width:14.5rem;background:var(--teal);color:#eaf3f4;border-radius:.55rem;box-shadow:0 16px 28px #142d3b2e;transform-style:preserve-3d}
+.beep-card{z-index:3;position:absolute;left:2.4rem;bottom:1.4rem;width:14.5rem;background:var(--teal);color:#eaf3f4;border-radius:.55rem;box-shadow:0 16px 28px #142d3b2e;transform-style:preserve-3d}
 .beep-head{display:flex;align-items:center;gap:.45rem;padding:.6rem .8rem;border-bottom:1px solid #23445a}
-.beep-head .brand-mark{width:1.2rem;height:1.2rem;color:#f05a28}
+.beep-head .brand-mark{width:1.4rem;height:1.4rem;color:#f05a28}
 .beep-head span{font-family:var(--font-mono);font-size:.58rem;font-weight:600;letter-spacing:.16em}
 .beep-head .chev{width:.9rem;height:.9rem;margin-left:auto;color:#7fa3b5}
 .beep-card p{font-family:var(--font-serif);font-style:italic;font-size:.9rem;padding:.75rem .8rem .85rem;color:#cfe3e9}
 
 .scene-hint{position:absolute;left:50%;bottom:.8rem;transform:translateX(-50%);font-family:var(--font-mono);font-size:.55rem;font-weight:600;letter-spacing:.2em;color:var(--muted);z-index:3;white-space:nowrap;background:#fffdf8cc;padding:.3rem .7rem;border-radius:.25rem;border:1px solid #ddd5c7}
-.scene-key{position:absolute;left:1rem;bottom:.9rem;display:flex;align-items:center;gap:.4rem;font-family:var(--font-mono);font-size:.5rem;font-weight:600;letter-spacing:.14em;color:var(--muted);z-index:3;background:#fffdf8cc;padding:.3rem .6rem;border-radius:.25rem;border:1px solid #ddd5c7}
+.scene-key{position:absolute;right:1rem;bottom:.9rem;display:flex;align-items:center;gap:.4rem;font-family:var(--font-mono);font-size:.5rem;font-weight:600;letter-spacing:.14em;color:var(--muted);z-index:3;background:#fffdf8cc;padding:.3rem .6rem;border-radius:.25rem;border:1px solid #ddd5c7}
 .key-dot{width:.42rem;height:.42rem;border-radius:50%}
 .key-live{background:#2f9a8d}
 .key-lock{background:#f05a28;margin-left:.55rem}
