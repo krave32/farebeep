@@ -24,9 +24,12 @@ import os
 import re
 import uuid
 
+from pathlib import Path
+
 from fastapi import BackgroundTasks, FastAPI, Request, Response
-from fastapi.responses import (HTMLResponse, PlainTextResponse,
+from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
                                RedirectResponse)
+from fastapi.staticfiles import StaticFiles
 
 from FareBeep import brain, chatstate
 from FareBeep.config import (APP_BASE_URL, CONSENT_VERSION, MESSAGING_PROVIDER,
@@ -1128,3 +1131,17 @@ def payment_status(reference: str = ""):
 </body>
 </html>"""
     return HTMLResponse(html)
+
+
+# ---------------------------------------------------------------------------
+# Landing website - the FareBeep home page (served from FareBeep/web/).
+# Assets are static files; "/" hands out the single-page site.
+# ---------------------------------------------------------------------------
+WEB_DIR = Path(__file__).resolve().parent / "web"
+
+app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
+
+
+@app.get("/", include_in_schema=False)
+def landing():
+    return FileResponse(WEB_DIR / "index.html")

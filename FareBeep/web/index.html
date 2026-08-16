@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<meta name="theme-color" content="#0c1f2b">
+<meta name="description" content="FareBeep is the domestic flight desk inside your chat. Say the route, lock the fare for ten minutes, pay in the conversation. No app, no forms, no silent price jumps.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="FareBeep · The flight desk in your chat">
+<meta property="og:description" content="Say the route, lock the fare, pay in chat. Nigeria's domestic flight desk — built for LOS · ABV · PHC.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='6' fill='none' stroke='%23f05a28' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%23f05a28' stroke-width='2' opacity='.45'/%3E%3Ccircle cx='16' cy='16' r='2.5' fill='%232f9a8d'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,500;0,8..60,600;1,8..60,500;1,8..60,600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}
+</script>
+<title>FareBeep · The flight desk in your chat</title>
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+<div class="shell">
+
+  <header class="site-header">
+    <a class="site-brand" href="#top" aria-label="FareBeep home">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="6" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="2" opacity=".45"/><circle cx="16" cy="16" r="2.5" fill="#2f9a8d"/></svg>
+      <span class="brand-word">Fare<em>Beep</em><small>DOMESTIC FLIGHT DESK · NG</small></span>
+    </a>
+    <nav class="site-nav" aria-label="Primary navigation">
+      <button class="nav-link" data-scroll="#how-it-works">How it works</button>
+      <button class="nav-link" data-scroll="#channels">Channels</button>
+      <button class="nav-link" data-scroll="#why-farebeep">Why FareBeep</button>
+    </nav>
+    <a class="btn btn-primary btn-sm" href="https://t.me/FareBeep_bot" target="_blank" rel="noopener">Open Telegram
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+    </a>
+  </header>
+
+  <main id="top">
+
+    <section class="landing-hero">
+      <div class="hero-grid-bg" aria-hidden="true"></div>
+      <div class="hero-copy">
+        <p class="kicker"><span class="status-dot" aria-hidden="true"></span>Nigeria domestic flight desk · Telegram live</p>
+        <h1 id="hero-title">Say the route.<br><em>Lock the fare.</em></h1>
+        <p class="hero-sub">FareBeep is the flight desk that lives inside your chat. Message the route, get the live fare, and hold it for ten minutes while you decide — no app, no forms, no silent price jumps.</p>
+        <div class="hero-cta-row">
+          <a class="btn btn-primary" href="https://t.me/FareBeep_bot" target="_blank" rel="noopener">Start in Telegram
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+          </a>
+          <button class="btn btn-ghost" id="whatsapp-soon" type="button">WhatsApp — soon
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>
+          </button>
+        </div>
+        <p class="hero-note">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>
+          The price you're shown is the price you can book. If the market moves, the bot asks you first.
+        </p>
+        <p class="hero-route-register">LOS · ABV · PHC</p>
+      </div>
+
+      <div class="hero-art" id="hero-art" aria-label="Interactive spatial scene of a night route between Lagos and Abuja">
+        <div class="art-frame" id="art-frame">
+          <canvas id="scene-canvas" aria-hidden="true"></canvas>
+          <div class="css-sky" aria-hidden="true">
+            <span class="orb orb-los"></span>
+            <span class="orb orb-abv"></span>
+            <span class="css-arc"></span>
+          </div>
+          <div class="chip chip-los"><b>Lagos</b><span>LOS</span></div>
+          <div class="chip chip-abv"><b>Abuja</b><span>ABV</span></div>
+          <div class="chat-orbital">
+            <div class="chat-row"><span class="who who-you">YOU</span><p>Lagos → Abuja</p></div>
+            <div class="chat-meta">20 Aug · 1 traveler</div>
+          </div>
+          <div class="beep-card">
+            <div class="beep-head">
+              <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="6" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="2" opacity=".45"/><circle cx="16" cy="16" r="2.5" fill="#2f9a8d"/></svg>
+              <span>FAREBEEP</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </div>
+            <p>"Fare locked. 10:00 on the clock."</p>
+          </div>
+          <p class="scene-hint">DRAG · TILT THE SCENE</p>
+          <div class="scene-key">
+            <span class="key-dot key-live"></span>LIVE ROUTE
+            <span class="key-dot key-lock"></span>FARE LOCKED
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="travel-strip" aria-label="Capabilities">
+      <div class="tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.5c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.3z"/></svg><b>Search in chat</b><span>Plain words, not forms</span></div>
+      <div class="tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg><b>10-minute price lock</b><span>The fare you see, held</span></div>
+      <div class="tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><b>Surge guard</b><span>Flags fares above ₦250k</span></div>
+      <div class="tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></svg><b>TRACK alerts</b><span>Beeped when the route drops</span></div>
+    </section>
+
+    <section class="journey-section" id="how-it-works">
+      <p class="section-topline">02 / THREE MOVES</p>
+      <div class="journey-grid">
+        <div class="journey-copy">
+          <h2>Three moves.<br><em>One conversation.</em></h2>
+          <article class="journey-step">
+            <span class="step-num">01</span>
+            <div>
+              <p class="step-label">STATE / ROUTE REQUEST</p>
+              <h3>Message your route</h3>
+              <p>Where from, where to, when — plain words. "lag to abj friday" is all FareBeep needs to start.</p>
+            </div>
+          </article>
+          <article class="journey-step">
+            <span class="step-num">02</span>
+            <div>
+              <p class="step-label">STATE / FARE RETURNED</p>
+              <h3>Get the live fare</h3>
+              <p>FareBeep checks the market for you — reusing fares other travelers already saw, so answers come back fast.</p>
+            </div>
+          </article>
+          <article class="journey-step">
+            <span class="step-num">03</span>
+            <div>
+              <p class="step-label">STATE / PRICE LOCKED</p>
+              <h3>Say BOOK, hold 10 minutes</h3>
+              <p>The price is locked while you pay by card or transfer. If the fare moved, you're asked before anything locks.</p>
+            </div>
+          </article>
+        </div>
+        <div class="route-thread" aria-label="Example FareBeep conversation">
+          <p class="thread-cap">ROUTE THREAD / LOS → ABV</p>
+          <div class="thread-msg msg-you">YOU — Lagos → Abuja, Friday 21 Aug</div>
+          <div class="thread-msg msg-beep"><span class="thread-who">FAREBEEP</span>Route noted. Dana 9J 333 · 06:00 · ₦98,000. Want TRACK on this route?</div>
+          <div class="thread-msg msg-you">YOU — how much total?</div>
+          <div class="thread-msg msg-beep"><span class="thread-who">FAREBEEP</span>₦118,500 all-in. Lock for 10 minutes — BOOK to hold it.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="channel-section" id="channels">
+      <p class="section-topline">01 / PICK YOUR DESK</p>
+      <div class="section-head">
+        <h2>Pick the chat desk.</h2>
+        <p>Each desk picks up the same conversation. Telegram is live now; WhatsApp is being prepared.</p>
+      </div>
+      <div class="channel-choices">
+        <article class="channel-card card-live">
+          <div class="card-label">LIVE NOW</div>
+          <p class="card-record">CHANNEL RECORD / TG-01 · VERIFIED DESK</p>
+          <p class="card-meta">LOS · ABV · PHC</p>
+          <h3>Telegram desk</h3>
+          <p class="card-body">Message @FareBeep_bot your route. The live desk returns fares, locks prices, and takes payment in the same conversation.</p>
+          <p class="card-foot">BOT: @FareBeep_bot</p>
+          <a class="btn btn-primary" href="https://t.me/FareBeep_bot" target="_blank" rel="noopener">Open live desk
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+          </a>
+        </article>
+        <article class="channel-card card-soon">
+          <div class="card-label">COMING SOON</div>
+          <p class="card-record">CHANNEL RECORD / WA-02 · LINK PENDING</p>
+          <p class="card-meta">DESK · LINK · PENDING</p>
+          <h3>WhatsApp desk</h3>
+          <p class="card-body">FareBeep's native WhatsApp assistant is being prepared. This record is ready for the business link when it is available.</p>
+          <p class="card-foot">STATUS: BUSINESS LINK PENDING</p>
+          <button class="btn btn-ghost" type="button" data-toast="WhatsApp is being prepared — add the business link when it is ready.">Add link later
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+          </button>
+        </article>
+      </div>
+    </section>
+
+    <section class="reason-section" id="why-farebeep">
+      <p class="section-topline">03 / THE FAREBEEP DIFFERENCE</p>
+      <div class="section-head">
+        <h2>Built for the Nigerian<br><em>domestic flyer.</em></h2>
+        <p>Three rules the bot never bends — because a travel conversation should never surprise you.</p>
+      </div>
+      <div class="reason-grid">
+        <article class="reason-card">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          <h3>The fare you saw is the fare you pay</h3>
+          <p>Prices hold for 10 minutes. If the market moves beyond ₦1,000, the bot re-asks — a jump never slips by silently.</p>
+        </article>
+        <article class="reason-card">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+          <h3>Refunds, not runarounds</h3>
+          <p>Payment arriving after the 10-minute window? It's refunded automatically through Paystack. No chasing, no tickets to nowhere.</p>
+        </article>
+        <article class="reason-card">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m16.24 7.76-2.12 6.36-6.36 2.12 2.12-6.36 6.36-2.12z"/></svg>
+          <h3>Made for LOS · ABV · PHC</h3>
+          <p>Slang-aware search, surge flags above ₦250,000, and TRACK beeps that tell you when the route gets cheaper.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="final-cta">
+      <p class="final-route-line">FINAL ROUTE CHECKPOINT / LOS · ABV · PHC / TELEGRAM LIVE</p>
+      <h2>Open the live desk.</h2>
+      <a class="btn btn-cta" href="https://t.me/FareBeep_bot" target="_blank" rel="noopener">Open @FareBeep_bot
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+      </a>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <a class="site-brand" href="#top" aria-label="FareBeep home">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="6" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="2" opacity=".45"/><circle cx="16" cy="16" r="2.5" fill="#2f9a8d"/></svg>
+      <span class="brand-word">Fare<em>Beep</em></span>
+    </a>
+    <p>Your route, kept in one conversation.</p>
+    <a class="footer-bot" href="https://t.me/FareBeep_bot" target="_blank" rel="noopener">@FareBeep_bot
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+    </a>
+  </footer>
+
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script type="module" src="/assets/scene.js"></script>
+</body>
+</html>

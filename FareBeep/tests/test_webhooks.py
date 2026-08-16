@@ -138,6 +138,15 @@ def test_health(client):
     assert client.get("/health").json()["status"] == "ok"
 
 
+def test_landing_page_served(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "FareBeep" in r.text
+    assert "Lock the fare" in r.text
+    assert client.get("/assets/styles.css").status_code == 200
+    assert client.get("/assets/scene.js").status_code == 200
+
+
 def test_payment_status_page(client):
     r = client.get("/payment/status", params={"reference": "FB-ABC123"})
     assert r.status_code == 200
