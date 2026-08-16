@@ -143,6 +143,11 @@ def test_landing_page_served(client):
     assert r.status_code == 200
     assert "FareBeep" in r.text
     assert "Lock the fare" in r.text
+    assert "Join on Telegram" in r.text
+    assert "The Search Beep" in r.text
+    assert "Zero Price Jumps" in r.text
+    assert "SECURED BY PAYSTACK" in r.text
+    assert "saved via Ledger" in r.text
     assert client.get("/assets/styles.css").status_code == 200
     assert client.get("/assets/scene.js").status_code == 200
 

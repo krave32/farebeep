@@ -190,3 +190,37 @@ for (const link of document.querySelectorAll('.nav-link')) {
     if (target) target.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' });
   });
 }
+
+if (!reduceMotion) {
+  for (const brand of document.querySelectorAll('.site-brand')) {
+    const mark = brand.querySelector('.brand-mark');
+    if (!mark) continue;
+    let bx = 0, by = 0, cx = 0, cy = 0;
+    brand.addEventListener('mousemove', (e) => {
+      const r = brand.getBoundingClientRect();
+      bx = ((e.clientX - r.left) / r.width) * 2 - 1;
+      by = -(((e.clientY - r.top) / r.height) * 2 - 1);
+    });
+    brand.addEventListener('mouseleave', () => { bx = 0; by = 0; });
+    (function tiltLogo() {
+      cx += (bx * 9 - cx) * 0.14;
+      cy += (by * 11 - cy) * 0.14;
+      mark.style.transform = `perspective(400px) rotateX(${cy.toFixed(2)}deg) rotateY(${cx.toFixed(2)}deg)`;
+      requestAnimationFrame(tiltLogo);
+    })();
+  }
+
+  const lockMin = document.getElementById('lock-min');
+  const ringFg = document.querySelector('.lock-ring .ring-fg');
+  if (lockMin && ringFg) {
+    const RING_C = 339.29;
+    let remain = 600;
+    setInterval(() => {
+      remain = remain > 0 ? remain - 1 : 600;
+      const m = String(Math.floor(remain / 60)).padStart(2, '0');
+      const s = String(remain % 60).padStart(2, '0');
+      lockMin.textContent = `${m}:${s}`;
+      ringFg.style.strokeDashoffset = (RING_C * (1 - remain / 600)).toFixed(1);
+    }, 1000);
+  }
+}

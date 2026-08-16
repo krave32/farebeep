@@ -24,15 +24,15 @@
 
   <header class="site-header">
     <a class="site-brand" href="#top" aria-label="FareBeep home">
-      <img class="brand-mark" src="/assets/logo.webp" alt="FareBeep logo">
+      <span class="brand-logo"><img class="brand-mark" src="/assets/logo.webp" alt="FareBeep logo"></span>
       <span class="brand-word">Fare<em>Beep</em><small>DOMESTIC FLIGHTS · IN CHAT</small></span>
     </a>
     <nav class="site-nav" aria-label="Primary navigation">
+      <button class="nav-link" data-scroll="#beeps">The Beeps</button>
       <button class="nav-link" data-scroll="#how-it-works">How it works</button>
       <button class="nav-link" data-scroll="#channels">Channels</button>
-      <button class="nav-link" data-scroll="#why-farebeep">Why FareBeep</button>
     </nav>
-    <a class="btn btn-primary btn-sm" href="https://t.me/FareBeep_bot" target="_blank" rel="noopener">Open Telegram
+    <a class="btn btn-primary btn-sm" href="https://t.me/FareBeep_bot" target="_blank" rel="noopener">Join on Telegram
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
     </a>
   </header>
@@ -46,11 +46,12 @@
         <h1 id="hero-title">Say the route.<br><em>Lock the fare.</em></h1>
         <p class="hero-sub">FareBeep is the flight finder that lives inside your chat. Message the route, get the live fare, and hold it for ten minutes while you decide — no app, no forms, no silent price jumps.</p>
         <div class="hero-cta-row">
-          <a class="btn btn-primary" href="https://t.me/FareBeep_bot" target="_blank" rel="noopener">Start in Telegram
+          <a class="btn btn-primary btn-hero" href="https://t.me/FareBeep_bot" target="_blank" rel="noopener">Join on Telegram
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
           </a>
-          <button class="btn btn-ghost" id="whatsapp-soon" type="button">WhatsApp — soon
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>
+          <button class="btn btn-wa" id="whatsapp-soon" type="button">WhatsApp
+            <span class="wa-badge">COMING SOON</span>
+            <span class="wa-tip" role="tooltip">Notify me when WhatsApp is live</span>
           </button>
         </div>
         <p class="hero-note">
@@ -89,13 +90,82 @@
           </div>
         </div>
       </div>
+
+      <div class="ledger-ticker" aria-hidden="true">
+        <div class="ticker-track">
+          <div class="ticker-set">
+            <span class="ticker-item">LOS-ABV · ₦12,500 saved via Ledger</span>
+            <span class="ticker-item">Community Search active</span>
+            <span class="ticker-item">24/7 Monitoring Online</span>
+            <span class="ticker-item">Current Best: ABV-PHC ₦72,000</span>
+            <span class="ticker-item">3,412 fares cached in the Shared Ledger</span>
+            <span class="ticker-item">TRACK active on 14 routes</span>
+          </div>
+          <div class="ticker-set">
+            <span class="ticker-item">LOS-ABV · ₦12,500 saved via Ledger</span>
+            <span class="ticker-item">Community Search active</span>
+            <span class="ticker-item">24/7 Monitoring Online</span>
+            <span class="ticker-item">Current Best: ABV-PHC ₦72,000</span>
+            <span class="ticker-item">3,412 fares cached in the Shared Ledger</span>
+            <span class="ticker-item">TRACK active on 14 routes</span>
+          </div>
+        </div>
+      </div>
     </section>
 
-    <section class="travel-strip" aria-label="Capabilities">
-      <div class="tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.5c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.3z"/></svg><b>Search in chat</b><span>Plain words, not forms</span></div>
-      <div class="tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg><b>10-minute price lock</b><span>The fare you see, held</span></div>
-      <div class="tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><b>Surge guard</b><span>Flags fares above ₦250k</span></div>
-      <div class="tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></svg><b>TRACK alerts</b><span>Beeped when the route drops</span></div>
+    <section class="bento-section" id="beeps">
+      <p class="section-topline">01 / THE THREE BEEPS</p>
+      <div class="bento-grid">
+        <article class="bento-card bento-search">
+          <div class="bento-copy">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/><path d="M16.24 7.76A6 6 0 1 0 8.23 16.67"/><path d="M12 18h.01"/><path d="M17.99 11.66A6 6 0 0 1 15.77 16.67"/><circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/></svg>
+            <p class="beep-label">BEEP 01 / THE SEARCH BEEP</p>
+            <h3>The Search Beep.</h3>
+            <p>Sub-second discovery powered by our Shared Ledger. We cache domestic fares so you get results faster than any airline portal.</p>
+          </div>
+          <div class="bento-visual" aria-hidden="true">
+            <p class="ledger-cap">SHARED LEDGER / LOS → ABV</p>
+            <div class="ledger-row hit"><span>Dana 9J 333 · 06:00</span><span>₦98,000</span></div>
+            <div class="ledger-row hit"><span>Air Peace P4 111 · 07:10</span><span>₦118,500</span></div>
+            <div class="ledger-row"><span>Green Africa 9J 222 · 08:00</span><span>₦154,000</span></div>
+            <p class="ledger-hit-chip">LEDGER HIT · 0.42s</p>
+          </div>
+        </article>
+        <article class="bento-card bento-price">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/><path d="m17 4 4 4"/><path d="m21 4-4 4"/></svg>
+          <p class="beep-label">BEEP 02 / THE PRICE BEEP</p>
+          <h3>The Price Beep.</h3>
+          <p>24/7 Market Monitoring. We 'Beep' you on Telegram the second Air Peace, Ibom Air, or Green Africa drops their prices.</p>
+        </article>
+        <article class="bento-card bento-status">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>
+          <p class="beep-label">BEEP 03 / THE STATUS BEEP</p>
+          <h3>The Status Beep.</h3>
+          <p>Live Aircraft Tracking. We monitor your plane's actual location via ADS-B data. We alert you to delays before the airline does.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="trust-section" id="price-lock">
+      <div class="trust-copy">
+        <p class="section-topline">THE 10-MINUTE PRICE LOCK</p>
+        <h2>Zero Price Jumps.</h2>
+        <p class="trust-body">Once you find your deal on Telegram, we lock the price for 10 minutes using our synchronized session-locking protocol.</p>
+        <span class="paystack-badge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          SECURED BY PAYSTACK
+        </span>
+      </div>
+      <div class="lock-timer" aria-label="Price lock demo timer">
+        <svg class="lock-ring" viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="ring-bg" cx="60" cy="60" r="54"></circle>
+          <circle class="ring-fg" cx="60" cy="60" r="54"></circle>
+        </svg>
+        <div class="lock-time">
+          <span id="lock-min">10:00</span>
+          <small>PRICE LOCK · FULL 10 MINUTES</small>
+        </div>
+      </div>
     </section>
 
     <section class="journey-section" id="how-it-works">
@@ -139,7 +209,7 @@
     </section>
 
     <section class="channel-section" id="channels">
-      <p class="section-topline">01 / PICK YOUR CHANNEL</p>
+      <p class="section-topline">03 / PICK YOUR CHANNEL</p>
       <div class="section-head">
         <h2>Pick your channel.</h2>
         <p>Every channel picks up the same conversation. Telegram is live now; WhatsApp is being prepared.</p>
@@ -152,7 +222,7 @@
           <h3>Telegram</h3>
           <p class="card-body">Message @FareBeep_bot your route. The live bot returns fares, locks prices, and takes payment in the same conversation.</p>
           <p class="card-foot">BOT: @FareBeep_bot</p>
-          <a class="btn btn-primary" href="https://t.me/FareBeep_bot" target="_blank" rel="noopener">Open Telegram
+          <a class="btn btn-primary" href="https://t.me/FareBeep_bot" target="_blank" rel="noopener">Join on Telegram
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
           </a>
         </article>
@@ -170,35 +240,10 @@
       </div>
     </section>
 
-    <section class="reason-section" id="why-farebeep">
-      <p class="section-topline">03 / THE FAREBEEP DIFFERENCE</p>
-      <div class="section-head">
-        <h2>Built for the Nigerian<br><em>domestic flyer.</em></h2>
-        <p>Three rules the bot never bends — because a travel conversation should never surprise you.</p>
-      </div>
-      <div class="reason-grid">
-        <article class="reason-card">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-          <h3>The fare you saw is the fare you pay</h3>
-          <p>Prices hold for 10 minutes. If the market moves beyond ₦1,000, the bot re-asks — a jump never slips by silently.</p>
-        </article>
-        <article class="reason-card">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-          <h3>Refunds, not runarounds</h3>
-          <p>Payment arriving after the 10-minute window? It's refunded automatically through Paystack. No chasing, no tickets to nowhere.</p>
-        </article>
-        <article class="reason-card">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m16.24 7.76-2.12 6.36-6.36 2.12 2.12-6.36 6.36-2.12z"/></svg>
-          <h3>Made for LOS · ABV · PHC</h3>
-          <p>Slang-aware search, surge flags above ₦250,000, and TRACK beeps that tell you when the route gets cheaper.</p>
-        </article>
-      </div>
-    </section>
-
     <section class="final-cta">
       <p class="final-route-line">FINAL ROUTE CHECKPOINT / LOS · ABV · PHC / TELEGRAM LIVE</p>
       <h2>Open the live bot.</h2>
-      <a class="btn btn-cta" href="https://t.me/FareBeep_bot" target="_blank" rel="noopener">Open @FareBeep_bot
+      <a class="btn btn-cta" href="https://t.me/FareBeep_bot" target="_blank" rel="noopener">Join on Telegram
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
       </a>
     </section>
@@ -207,7 +252,7 @@
 
   <footer class="site-footer">
     <a class="site-brand" href="#top" aria-label="FareBeep home">
-      <img class="brand-mark" src="/assets/logo.webp" alt="FareBeep logo">
+      <span class="brand-logo"><img class="brand-mark" src="/assets/logo.webp" alt="FareBeep logo"></span>
       <span class="brand-word">Fare<em>Beep</em></span>
     </a>
     <p>Your route, kept in one conversation.</p>
