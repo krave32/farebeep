@@ -102,7 +102,7 @@ def test_prompt_holds_the_honesty_rules():
     assert "payment always comes before the ticket" in text
     assert "never repeat a failed tool call identically" in text
     assert "greet them back" in text
-    assert "resume" in text
+    assert "fresh session" in text
 
 
 def test_search_tool_serves_ledger_hit(db, user, monkeypatch):

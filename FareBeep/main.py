@@ -184,14 +184,17 @@ def _handle_incoming_message(phone: str, text: str) -> None:
             # standalone hello starts a whole new one. Without this,
             # stale quotes, ranked picks and pending follow-ups hijack
             # the NEXT route ("hi" -> "Abuja" would answer a dead
-            # question from the old thread). Chat memory (who they are,
-            # what was discussed) stays - only live transactional state
-            # is wiped, so a greeting always opens a clean slate.
+            # question from the old thread) - and the agent's rolling
+            # memory would resurrect it conversationally anyway ("still
+            # on Abuja->PHC?"). So EVERYTHING chat-scoped goes: quotes,
+            # picks, pending items AND agent history. The User row (name,
+            # identity) survives - only the conversation restarts.
             if _is_session_greeting(text):
                 chatstate.clear_pending_fare(db, user.phone)
                 chatstate.clear_pending_requote(db, user.phone)
                 chatstate.clear_last_fare(db, user.phone)
                 chatstate.clear_last_fares(db, user.phone)
+                chatstate.clear_agent_history(db, user.phone)
 
             # PICK GATE (before the brain): a "1", "2" or "3" reply right
             # after a ranked fare list selects and locks THAT fare. Narrow:

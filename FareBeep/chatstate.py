@@ -110,3 +110,10 @@ def append_agent_history(db, phone: str, user_text: str,
     hist = hist + [{"role": "user", "content": user_text},
                    {"role": "assistant", "content": assistant_text}]
     _write(db, phone, "agent_history", hist[-MAX_AGENT_HISTORY:])
+
+
+def clear_agent_history(db, phone: str) -> None:
+    """Wipe the Groq agent's rolling memory (greeting reset: the new
+    session must not resurrect the old thread conversationally). The
+    User row (name, identity) is untouched - only chat memory goes."""
+    _write(db, phone, "agent_history", [])

@@ -777,8 +777,9 @@ def test_is_session_greeting_matches_standalone_only():
 
 
 def test_greeting_wipes_transactional_state(client, monkeypatch):
-    """Stale quotes, picks and pending follow-ups die on 'hi' - the next
-    route starts clean. Forced onto the brain path (no live Groq)."""
+    """Stale quotes, picks, pending follow-ups AND agent memory die on
+    'hi' - the next route starts clean. Forced onto the brain path
+    (no live Groq)."""
     monkeypatch.setattr(main, "GROQ_API_KEY", None)
     test_client, fake, ledger = client
     phone = "987654321"
@@ -788,6 +789,8 @@ def test_greeting_wipes_transactional_state(client, monkeypatch):
         chatstate.set_last_fares(db, phone, {"fares": []})
         chatstate.set_pending_fare(db, phone, {"destination_iata": "ABV"})
         chatstate.set_pending_requote(db, phone, {"fare": 1})
+        chatstate.append_agent_history(db, phone, "old route",
+                                       "old answer")
     finally:
         db.close()
 
@@ -800,6 +803,7 @@ def test_greeting_wipes_transactional_state(client, monkeypatch):
         assert chatstate.get_last_fares(db, phone) is None
         assert chatstate.get_pending_fare(db, phone) is None
         assert chatstate.get_pending_requote(db, phone) is None
+        assert chatstate.get_agent_history(db, phone) == []
     finally:
         db.close()
 
