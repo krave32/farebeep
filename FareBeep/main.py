@@ -1015,6 +1015,8 @@ async def telegram_webhook(request: Request, background: BackgroundTasks):
     chat_id = str(chat.get("id") or "")
     text = str(message.get("text") or "")
     if text and chat_id:
+        from FareBeep.notifier import TelegramBot
+        TelegramBot().send_action(chat_id)  # typing… (best-effort)
         background.add_task(_handle_incoming_message, chat_id, text)
     return {"ok": True}
 

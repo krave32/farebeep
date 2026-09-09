@@ -237,6 +237,21 @@ class TelegramBot:
             logger.error("Telegram message failed to %s: %s", to, e)
             return False
 
+    def send_action(self, to: str, action: str = "typing") -> bool:
+        """Typing indicator (sendChatAction). Telegram shows it ~5s, so
+        call on receipt - the reply lands while it is still visible on
+        fast turns. Best-effort: never raises, never blocks a reply."""
+        if not self._ready:
+            return False
+        try:
+            resp = self._http.post(
+                self._api_url("sendChatAction"),
+                json={"chat_id": to, "action": action})
+            resp.raise_for_status()
+            return bool(resp.json().get("ok"))
+        except Exception:
+            return False
+
     def send_template(self, to: str, template_name: str,
                       body_parameters: list = None,
                       language: str = "en_US",

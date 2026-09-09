@@ -74,7 +74,11 @@ def _api(method: str) -> str:
 
 def _handle(chat_id: str, text: str) -> None:
     from FareBeep.main import _handle_incoming_message
+    from FareBeep.notifier import TelegramBot
     try:
+        # Typing indicator first (best-effort): the chat feels alive
+        # while the brain works. Never blocks the reply.
+        TelegramBot().send_action(chat_id)
         _handle_incoming_message(chat_id, text)
     except Exception as e:
         logger.error("Polled message failed (%s): %s", chat_id, e)

@@ -61,6 +61,29 @@ def test_poll_once_offset_never_goes_backwards(monkeypatch):
     assert poller.poll_once(client, 9) == 12
 
 
+def test_poller_handle_sends_typing_first(monkeypatch):
+    """Typing indicator fires, then the message is handled - and a
+    typing failure must never block the reply."""
+    from FareBeep import main as main_mod
+    from FareBeep import notifier as notifier_mod
+    from FareBeep.notifier import TelegramBot
+
+    actions = []
+
+    class TypingBot(TelegramBot):
+        def send_action(self, to, action="typing"):
+            actions.append((to, action))
+            return True
+
+    handled = []
+    monkeypatch.setattr(notifier_mod, "TelegramBot", TypingBot)
+    monkeypatch.setattr(main_mod, "_handle_incoming_message",
+                        lambda cid, text: handled.append((cid, text)))
+    poller._handle("555", "hi")
+    assert actions == [("555", "typing")]
+    assert handled == [("555", "hi")]
+
+
 def test_poller_lock_skipped_on_sqlite(monkeypatch):
     """Dev/tests on SQLite: no advisory locks, poller proceeds."""
     monkeypatch.setattr("FareBeep.database.DATABASE_PROVIDER",

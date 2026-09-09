@@ -151,3 +151,70 @@ def test_telegram_send_template_degrades_to_text(monkeypatch):
 def test_telegram_send_text_without_token_is_safe(monkeypatch):
     bot = TelegramBot(token=None)
     assert bot.send_text("987654321", "hello") is False
+
+
+def test_telegram_send_action_posts_typing(monkeypatch):
+    class FakeHTTP:
+        def post(self, url, json):
+            self.url = url
+            self.payload = json
+            return FakeResp({"ok": True})
+
+    class FakeResp:
+        def __init__(self, payload):
+            self._p = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._p
+
+    http = FakeHTTP()
+    bot = TelegramBot(token="123:abc", http_client=http)
+    assert bot.send_action("987654321") is True
+    assert http.url.endswith("/sendChatAction")
+    assert http.payload == {"chat_id": "987654321", "action": "typing"}
+
+
+def test_telegram_send_action_without_token_is_safe(monkeypatch):
+    bot = TelegramBot(token=None)
+    assert bot.send_action("987654321") is False
+
+
+def test_telegram_send_action_failure_never_raises(monkeypatch):
+    class BoomHTTP:
+        def post(self, url, json):
+            raise ConnectionError("down")
+
+    bot = TelegramBot(token="123:abc", http_client=BoomHTTP())
+    assert bot.send_action("987654321") is False
+
+
+def test_webhook_sends_typing_on_receipt(client, monkeypatch):
+    """Typing indicator fires before the background reply is scheduled."""
+    from FareBeep import notifier as notifier_mod
+
+    actions = []
+
+    class TypingBot(TelegramBot):
+        def send_action(self, to, action="typing"):
+            actions.append((to, action))
+            return True
+
+        def send_text(self, to, body):
+            return True
+
+    monkeypatch.setattr(notifier_mod, "TelegramBot", TypingBot)
+    monkeypatch.setattr(main, "_handle_incoming_message",
+                        lambda phone, text: None)
+    test_client, _ = client
+    r = test_client.post("/webhook/telegram",
+                         json={"update_id": 42,
+                               "message": {"chat": {"id": 555},
+                                           "text": "hi"}},
+                         headers={"X-Telegram-Bot-Api-Secret-Token":
+                                  "farebeep-test-secret"})
+    assert r.status_code == 200
+    assert actions == [("555", "typing")]
+
