@@ -856,7 +856,7 @@ def resolve_pick(text: str, fares: list, api_key: str = None,
 
 
 def _fare_lines(fares: list) -> list:
-    """'1. Dana Air, leaves 06:00 - ₦98,000' lines for the numbered list."""
+    """'1. Rano Air, leaves 06:00 - ₦98,000' lines for the numbered list."""
     return [f"{i}. {f['airline']}"
             + (f", leaves {f['departs_at']}" if f.get("departs_at") else "")
             + f" - ₦{f['price']:,.0f}"

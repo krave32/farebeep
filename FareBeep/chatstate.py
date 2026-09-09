@@ -10,6 +10,7 @@ One row per phone with three JSON slots:
   last_fares    - the last ranked list (bare "1, 2 or 3" picks use it)
   pending_fare  - a partial fare we asked a follow-up about (a bare city
                   answer completes it)
+  agent_history - the Groq agent's rolling [{role, content}] memory
 
 Writes COMMIT immediately: each message turn runs in its own short-lived
 session, so a later turn (possibly on another replica) must see them.
@@ -91,3 +92,21 @@ def set_pending_requote(db, phone: str, ctx: dict) -> None:
 
 def clear_pending_requote(db, phone: str) -> None:
     _write(db, phone, "pending_requote", None)
+
+
+MAX_AGENT_HISTORY = 12   # rolling window: the last ~6 turns
+
+
+def get_agent_history(db, phone: str) -> list:
+    """The Groq agent's rolling memory: [{role, content}...] (may be empty)."""
+    return _read(db, phone, "agent_history") or []
+
+
+def append_agent_history(db, phone: str, user_text: str,
+                         assistant_text: str) -> None:
+    """Record one turn, keeping only the trailing window (replica-safe:
+    a single read-modify-write per turn, same as every other slot)."""
+    hist = get_agent_history(db, phone)
+    hist = hist + [{"role": "user", "content": user_text},
+                   {"role": "assistant", "content": assistant_text}]
+    _write(db, phone, "agent_history", hist[-MAX_AGENT_HISTORY:])

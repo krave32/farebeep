@@ -2,6 +2,7 @@
 - psycopg2 driver normalization on every Postgres URL scheme
 - fare_ledger UPSERT compiles to INSERT ... ON CONFLICT (one round-trip)
 - SQLite fallback path stays select-then-write (no ON CONFLICT)
+- schema drift alarm (models vs live DB)
 """
 from datetime import datetime
 
@@ -107,3 +108,33 @@ def test_sqlite_upsert_still_works_without_on_conflict(db):
         FareLedger.flight_date == "2026-08-20").all()
     assert len(rows) == 1
     assert rows[0].price == 98000.0
+
+
+# ---------------------------------------------------------------------------
+# schema drift alarm - models vs live DB (the Sep 2026 silent breakages)
+# ---------------------------------------------------------------------------
+def test_schema_drift_clean_on_fresh_schema(monkeypatch):
+    """Fresh create_all: models match, alarm stays silent."""
+    from sqlalchemy import create_engine as _mk
+
+    from FareBeep.models import Base
+    engine = _mk("sqlite://")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(database, "get_engine", lambda: engine)
+    assert database.check_schema_drift(Base) == []
+
+
+def test_schema_drift_names_missing_column(monkeypatch):
+    """Outdated table (pre-agent_history chat_state): alarm names it."""
+    from sqlalchemy import create_engine as _mk
+
+    from FareBeep.models import Base
+    engine = _mk("sqlite://")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE chat_state (id INTEGER PRIMARY KEY, "
+            "phone VARCHAR)")
+    monkeypatch.setattr(database, "get_engine", lambda: engine)
+    missing = database.check_schema_drift(Base)
+    assert "chat_state.agent_history" in missing
+    assert "chat_state.pending_requote" in missing

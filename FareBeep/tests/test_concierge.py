@@ -104,8 +104,8 @@ def _ranked_fares():
     """Three sane fares for the ranked-list flow."""
     return [
         {"source": "serpapi", "flight_date": "2026-08-14", "price": 98000.0,
-         "airline": "Dana Air", "departs_at": "06:00",
-         "flight_number": "9J 333", "verify_link": "https://example.com/1",
+         "airline": "Rano Air", "departs_at": "06:00",
+         "flight_number": "RN 303", "verify_link": "https://example.com/1",
          "above_guardrail": False},
         {"source": "serpapi", "flight_date": "2026-08-14", "price": 118500.0,
          "airline": "Air Peace", "departs_at": "07:10",
@@ -113,7 +113,7 @@ def _ranked_fares():
          "above_guardrail": False},
         {"source": "serpapi", "flight_date": "2026-08-14", "price": 154000.0,
          "airline": "Green Africa", "departs_at": "08:00",
-         "flight_number": "9J 222", "verify_link": "https://example.com/3",
+         "flight_number": "Q9 222", "verify_link": "https://example.com/3",
          "above_guardrail": False},
     ]
 
@@ -410,7 +410,7 @@ def test_ranked_list_reply_when_multiple_fares(client):
     body = fake.sent[-1][1]
     assert "Here's what I found Lagos -> Abuja on" in body
     assert "Which one would you like? Reply 1, 2 or 3." in body
-    assert "1. Dana Air, leaves 06:00 - ₦98,000" in body
+    assert "1. Rano Air, leaves 06:00 - ₦98,000" in body
     assert "2. Air Peace, leaves 07:10 - ₦118,500" in body
     assert "3. Green Africa, leaves 08:00 - ₦154,000" in body
 
@@ -508,7 +508,7 @@ def test_pick_gate_shapes(monkeypatch, session_factory):
     # Gemini's own understanding (that is brain.py's job, unit-tested).
     def fake_resolve(text, fares):
         return {"the second one": 2, "air peace please": 2,
-                "the 7am flight": 2, "the dana one": 1,
+                "the 7am flight": 2, "the rano one": 1,
                 "the cheapest": 1}.get(text.lower().strip())
 
     monkeypatch.setattr(main.brain, "resolve_pick", fake_resolve)
@@ -537,7 +537,7 @@ def test_pick_gate_shapes(monkeypatch, session_factory):
     assert main._try_pick(db, "the second one", phone)["flight_number"] == fares[1]["flight_number"]
     assert main._try_pick(db, "Air Peace please", phone)["flight_number"] == fares[1]["flight_number"]
     assert main._try_pick(db, "the 7am flight", phone)["flight_number"] == fares[1]["flight_number"]
-    assert main._try_pick(db, "the Dana one", phone)["flight_number"] == fares[0]["flight_number"]
+    assert main._try_pick(db, "the Rano one", phone)["flight_number"] == fares[0]["flight_number"]
     assert main._try_pick(db, "the cheapest", phone)["flight_number"] == fares[0]["flight_number"]
     # a pick-shaped message the brain can't resolve -> gentle "which one?"
     assert main._try_pick(db, "the purple one", phone) == "unclear"
@@ -608,7 +608,7 @@ def test_natural_pick_unresolved_asks_gently(client, monkeypatch):
     body = fake.sent[-1][1]
     assert "didn't quite catch" in body
     assert "the purple one" in body              # echoes what the user said
-    assert "Dana Air" in body                    # re-lists the real options
+    assert "Rano Air" in body                    # re-lists the real options
     assert _last_fares() is not None       # list still active
 
 
@@ -683,10 +683,10 @@ def test_ranked_reply_narrated_by_ai_sent_verbatim(client, monkeypatch):
     
     ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
     narrated = ("Hi Damilola! 😊 Here's what I found Lagos -> Abuja on "
-                "2026-08-14:\n1. Dana Air, leaves 06:00 - ₦98,000\n2. Air "
+                "2026-08-14:\n1. Rano Air, leaves 06:00 - ₦98,000\n2. Air "
                 "Peace, leaves 07:10 - ₦118,500\n3. Green Africa, leaves "
                 "08:00 - ₦154,000\n\nWhich one would you like? Reply 1, 2 "
-                "or 3 - the Dana is the best value.")
+                "or 3 - the Rano is the best value.")
     monkeypatch.setattr(main.brain, "compose_ranked_reply",
                         lambda *a, **k: narrated)
 
@@ -761,3 +761,61 @@ def test_requote_small_move_books_silently(client, monkeypatch):
     assert calls["airline_price"] == 119000.0, calls
     assert "TEST MODE" in fake.sent[-1][1]
     assert "moved" not in fake.sent[-1][1]
+
+
+# ---------------------------------------------------------------------------
+# Greeting reset: "hi" starts a whole new session for another route
+# ---------------------------------------------------------------------------
+def test_is_session_greeting_matches_standalone_only():
+    assert main._is_session_greeting("hi")
+    assert main._is_session_greeting("  Hello!! ")
+    assert main._is_session_greeting("GOOD MORNING")
+    assert not main._is_session_greeting("hi, lagos to abuja")
+    assert not main._is_session_greeting("Lagos to Abuja tomorrow")
+    assert not main._is_session_greeting("")
+    assert not main._is_session_greeting(None)
+
+
+def test_greeting_wipes_transactional_state(client, monkeypatch):
+    """Stale quotes, picks and pending follow-ups die on 'hi' - the next
+    route starts clean. Forced onto the brain path (no live Groq)."""
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)
+    test_client, fake, ledger = client
+    phone = "987654321"
+    db = main.SessionLocal()
+    try:
+        chatstate.set_last_fare(db, phone, {"origin_iata": "LOS"})
+        chatstate.set_last_fares(db, phone, {"fares": []})
+        chatstate.set_pending_fare(db, phone, {"destination_iata": "ABV"})
+        chatstate.set_pending_requote(db, phone, {"fare": 1})
+    finally:
+        db.close()
+
+    r = _post(test_client, "hi")
+    assert r.status_code == 200
+
+    db = main.SessionLocal()
+    try:
+        assert chatstate.get_last_fare(db, phone) is None
+        assert chatstate.get_last_fares(db, phone) is None
+        assert chatstate.get_pending_fare(db, phone) is None
+        assert chatstate.get_pending_requote(db, phone) is None
+    finally:
+        db.close()
+
+
+def test_route_after_greeting_searches_fresh(client, monkeypatch):
+    """After 'hi', a new route is a fresh search - never resolved against
+    the dead thread's pending follow-up."""
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)
+    test_client, fake, ledger = client
+    ledger["inst"] = RecordingLedger(None)
+
+    _post(test_client, "I'm going to Lagos on next week thursday")
+    assert _pending_fare() is not None  # follow-up open...
+    _post(test_client, "hi")
+    assert _pending_fare() is None      # ...killed by the greeting
+
+    _post(test_client, "Lagos to Abuja tomorrow")
+    origins = [c[0] for c in ledger["inst"].calls]
+    assert "LOS" in origins  # searched live, not answered from memory

@@ -1,4 +1,6 @@
 """Unit tests for the tunnel-free Telegram poller."""
+import pytest
+
 from FareBeep import poller
 
 
@@ -57,3 +59,83 @@ def test_poll_once_offset_never_goes_backwards(monkeypatch):
                         lambda cid, text: handled.append((cid, text)))
     client = _FakeClient()
     assert poller.poll_once(client, 9) == 12
+
+
+def test_poller_lock_skipped_on_sqlite(monkeypatch):
+    """Dev/tests on SQLite: no advisory locks, poller proceeds."""
+    monkeypatch.setattr("FareBeep.database.DATABASE_PROVIDER",
+                        "SQLite (fallback)")
+    assert poller._acquire_poller_lock() is None
+
+
+def test_poller_lock_held_returns_connection(monkeypatch):
+    """First poller takes the Postgres lock and keeps it."""
+    monkeypatch.setattr("FareBeep.database.DATABASE_PROVIDER", "Supabase")
+
+    class _Conn:
+        closed = False
+
+        def execute(self, *a, **k):
+            class _R:
+                @staticmethod
+                def scalar():
+                    return True
+
+            return _R()
+
+        def close(self):
+            self.closed = True
+
+    class _Sess:
+        def __init__(self, conn):
+            self._conn = conn
+            self.closed = False
+
+        def connection(self):
+            return self._conn
+
+        def close(self):
+            self.closed = True
+
+    conn = _Conn()
+    sess = _Sess(conn)
+    monkeypatch.setattr("FareBeep.database.SessionLocal", lambda: sess)
+    assert poller._acquire_poller_lock() is conn
+    assert conn.closed is False
+    assert sess.closed is False
+
+
+def test_poller_lock_contended_exits(monkeypatch):
+    """Second poller: exits loudly instead of double-answering users."""
+    monkeypatch.setattr("FareBeep.database.DATABASE_PROVIDER", "Supabase")
+
+    class _Conn:
+        closed = False
+
+        def execute(self, *a, **k):
+            class _R:
+                @staticmethod
+                def scalar():
+                    return False
+
+            return _R()
+
+        def close(self):
+            self.closed = True
+
+    class _Sess:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def connection(self):
+            return self._conn
+
+        def close(self):
+            self._conn.close()
+
+    conn = _Conn()
+    monkeypatch.setattr("FareBeep.database.SessionLocal",
+                        lambda: _Sess(conn))
+    with pytest.raises(SystemExit):
+        poller._acquire_poller_lock()
+    assert conn.closed is True

@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("farebeep.worker")
 
 from FareBeep.config import (FX_RATE_TTL_HOURS, STATUS_POLL_SECONDS,  # noqa: E402
-                             STATUS_WATCH_LEAD_HOURS, TRACKING_POLL_HOURS)
+                             STATUS_WATCH_LEAD_HOURS, TRACKING_POLL_HOURS, WARM_INTERVAL_MINUTES)
 from FareBeep.database import SessionLocal, init_db  # noqa: E402
 
 
@@ -121,11 +121,16 @@ def build_scheduler():
     tracking checks every 4h, the sweep/status loops stay fast."""
     from apscheduler.schedulers.blocking import BlockingScheduler
 
+    from FareBeep.warmer import run_warmer_if_due
+
     scheduler = BlockingScheduler()
     scheduler.add_job(run_fare_cycle, "interval",
                       hours=TRACKING_POLL_HOURS, next_run_time=time_now())
     scheduler.add_job(record_fx_rate, "interval",
                       hours=FX_RATE_TTL_HOURS, next_run_time=time_now())
+    scheduler.add_job(run_warmer_if_due, "interval",
+                      minutes=WARM_INTERVAL_MINUTES,
+                      next_run_time=time_now())
     scheduler.add_job(run_cycles, "interval", seconds=STATUS_POLL_SECONDS)
     return scheduler
 
@@ -158,6 +163,11 @@ def main():
             run_cycles()
         except Exception as e:
             logger.error("Worker cycle failed: %s", e)
+        try:
+            from FareBeep.warmer import run_warmer_if_due
+            run_warmer_if_due()  # internally gated to WARM_INTERVAL_MINUTES
+        except Exception as e:
+            logger.error("Warmer cycle failed: %s", e)
         record_fx_rate()   # TTL-guarded: at most one row per FX_RATE_TTL_HOURS
         time.sleep(STATUS_POLL_SECONDS)
 

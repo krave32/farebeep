@@ -182,9 +182,55 @@ def init_db(base) -> None:
     - SQLite fallback: creates farebeep_local.db on first run.
     - Supabase: tables are normally created via schema.sql; this is a safe
       auto-idempotent fallback for development.
+    Afterwards: additive migrations, then the drift alarm (anything the
+    models expect but the live DB lacks - the bot breaks silently on
+    those, so they scream here instead).
     """
     base.metadata.create_all(bind=get_engine())
     _apply_additive_migrations()
+    drifted = check_schema_drift(base)
+    if drifted:
+        _banner(f"❌ SCHEMA DRIFT: {len(drifted)} column(s) missing from "
+                f"the live DB: {', '.join(drifted)} - see log")
+
+
+def check_schema_drift(base) -> list:
+    """Model-vs-database column diff. Returns ['table.column', ...]
+    missing from the live DB (tables entirely absent as 'table.*').
+
+    Runs AFTER _apply_additive_migrations, so anything listed here is
+    NOT self-healable: add it to the migrations list or schema.sql.
+    Every gap is logger.error - a missing column fails requests with
+    raw SQL errors and no user-facing explanation.
+    """
+    from sqlalchemy import inspect
+    try:
+        inspector = inspect(get_engine())
+        live_tables = set(inspector.get_table_names())
+    except Exception as e:
+        logger.error("Schema drift check failed (cannot inspect DB): %s", e)
+        return ["<check-failed>"]
+    missing = []
+    for table in base.metadata.tables.values():
+        if table.name not in live_tables:
+            missing.append(f"{table.name}.* (table)")
+            continue
+        try:
+            live_cols = {c["name"]
+                         for c in inspector.get_columns(table.name)}
+        except Exception as e:
+            logger.error("Schema drift check failed on %s: %s",
+                         table.name, e)
+            continue
+        for col in table.columns:
+            if col.name not in live_cols:
+                missing.append(f"{table.name}.{col.name}")
+    for gap in missing:
+        logger.error("SCHEMA DRIFT: live DB is missing %s - add it to "
+                     "_apply_additive_migrations() or schema.sql", gap)
+    if not missing:
+        logger.info("Schema drift check: models match the live DB")
+    return missing
 
 
 def _apply_additive_migrations() -> None:
@@ -196,6 +242,7 @@ def _apply_additive_migrations() -> None:
         return
     additive = [
         ("chat_state", "pending_requote", "JSON"),
+        ("chat_state", "agent_history", "JSON"),
     ]
     engine = get_engine()
     with engine.begin() as conn:

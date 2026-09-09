@@ -3,7 +3,10 @@
 Flow (per the settlement brief):
 
   1. State Management - "BOOK" -> a `booking_session` row is created with
-     status = "pending" and expires_at = now() + 10 minutes
+     status = "pending" and expires_at = now() + TTL, where TTL is 10
+     minutes for card payments and 13 minutes otherwise. The extra 3
+     minutes are an internal buffer for slow bank-transfer webhooks; the
+     user still sees the 10-minute promise.
   2. The Price Lock   - the fare is refreshed LIVE (SerpApi, ledger ignored)
      so the quoted price is real at lock time
   3. The Payment Link - a Paystack Test Link is generated for
@@ -24,7 +27,6 @@ from typing import Callable, Optional
 
 from sqlalchemy.orm import Session
 
-from FareBeep.config import BOOKING_TTL_MINUTES
 from FareBeep.models import BookingSession, SessionStatus, utcnow
 from FareBeep.payments import (calculate_final_price,
                                initialize_paystack_payment)
@@ -46,6 +48,9 @@ def pnr_from_ref(payment_ref: str) -> str:
 # ---------------------------------------------------------------------------
 DEFAULT_DEPARTURE_HOUR = 8   # fallback departure time when only the date is known
 
+CARD_TTL_MINUTES = 10   # card webhooks confirm within seconds
+BANK_TTL_MINUTES = 13   # bank transfers take 2-5 min to confirm - 3m buffer
+
 
 def _departure_for(flight_date: str, scheduled_departure=None):
     """Departure ts for the status watch: the recorded time, else the
@@ -62,9 +67,14 @@ class BookingService:
     def __init__(self, db: Session, paystack=None,
                  ttl_minutes: int = None, clock=None,
                  watch_factory: Callable = None):
+        """Owns booking_session lifecycle: pending -> paid | expired | refund_flagged.
+
+        ttl_minutes: explicit lock window (tests/ops). None -> resolved per
+        payment_method at create_booking: 10 for card, 13 otherwise.
+        """
         self.db = db
         self.paystack = paystack  # kept for injection compat (unused - payments.py owns Paystack)
-        self.ttl_minutes = ttl_minutes or BOOKING_TTL_MINUTES
+        self.ttl_minutes = ttl_minutes
         self.clock = clock or utcnow
         # paid bookings -> status watch hook (default: StatusService.create_watch)
         self.watch_factory = watch_factory
@@ -76,12 +86,15 @@ class BookingService:
                        scheduled_departure=None,
                        email: str = None,
                        airline: str = None,
-                       source: str = "serpapi") -> dict:
+                       source: str = "serpapi",
+                       payment_method: str = None) -> dict:
         """Create a `booking_session` row + Paystack Test Link.
 
         Pricing follows the settlement brief:
             total = (airline_price + ARHA_MARKUP + 100) / (1 - 0.015)
 
+        The lock window is 10 minutes for card, 13 minutes otherwise
+        (bank transfers confirm via webhook 2-5 min after the transfer).
         Returns {session, payment_link, total_amount, expires_at} or raises
         PaystackError.
         """
@@ -89,6 +102,12 @@ class BookingService:
         reference = f"FB-{uuid.uuid4().hex[:12].upper()}"
         link = initialize_paystack_payment(
             reference, pricing["total_amount"], email)
+
+        if self.ttl_minutes is not None:
+            ttl = self.ttl_minutes
+        else:
+            ttl = (CARD_TTL_MINUTES if payment_method == "card"
+                   else BANK_TTL_MINUTES)
 
         session = BookingSession(
             user_id=user_id,
@@ -109,7 +128,7 @@ class BookingService:
                 "source": source,
             },
             status=SessionStatus.PENDING.value,
-            expires_at=self.clock() + timedelta(minutes=self.ttl_minutes),
+            expires_at=self.clock() + timedelta(minutes=ttl),
             payment_ref=reference,
             paystack_access_code=link["access_code"],
             callback_url=link["authorization_url"],

@@ -77,15 +77,47 @@ class MetaWhatsapp:
         return self._send(to, {"type": "text",
                                "text": {"body": body}}, "text")
 
+    def send_interactive_card(self, to: str, body: str,
+                                buttons: list,
+                                image_url: str = None,
+                                footer: str = None) -> bool:
+        """Flight card: optional airline-logo image header, price body,
+        up to 3 tap buttons. buttons = [(button_id, title), ...] -
+        titles are clipped to WhatsApp's 20-char button limit.
+
+        No catalog, no templates, no approvals: works inside the 24h
+        user window with live prices. See FareBeep/cards.py.
+        """
+        interactive = {"type": "button", "body": {"text": body}}
+        if image_url:
+            interactive["header"] = {"type": "image",
+                                     "image": {"link": image_url}}
+        if footer:
+            interactive["footer"] = {"text": footer}
+        interactive["action"] = {"buttons": [
+            {"type": "reply",
+             "reply": {"id": bid, "title": str(title)[:20]}}
+            for bid, title in (buttons or [])[:3]
+        ]}
+        return self._send(to, {"type": "interactive",
+                               "interactive": interactive}, "flight_card")
+
     def send_template(self, to: str, template_name: str,
                       body_parameters: list = None,
                       language: str = "en_US",
-                      policy: str = "deterministic") -> bool:
+                      policy: str = "deterministic",
+                      buttons: list = None) -> bool:
         """Proactive WhatsApp Template message (outside the 24h window).
 
-        Used by status.py for status-change pushes (e.g. "Delayed"). The
-        template must already be approved in the Meta app, with the exact
-        same name (see META_TEMPLATE_FLIGHT_STATUS in config).
+        Used by status.py for status-change pushes (e.g. "Delayed") and
+        by alerts.py for price-drop Beeps. The template must already be
+        approved in the Meta app, with the exact same name (see
+        META_TEMPLATE_* in config).
+
+        buttons: optional per-send quick-reply payloads, positionally
+        matched to the template's buttons, e.g. [{"payload": "beep:12"},
+        {"payload": "dismiss"}]. Entries may be None to leave a button
+        static. Taps return through /webhook/meta as button_reply ids.
         """
         components = []
         if body_parameters:
@@ -98,6 +130,17 @@ class MetaWhatsapp:
             "name": template_name,
             "language": {"code": language, "policy": policy},
         }
+        if buttons:
+            for i, btn in enumerate(buttons):
+                if not btn:
+                    continue
+                components.append({
+                    "type": "button",
+                    "sub_type": btn.get("sub_type", "quick_reply"),
+                    "index": str(i),
+                    "parameters": [{"type": "payload",
+                                    "payload": btn["payload"]}],
+                })
         if components:
             template["components"] = components
         return self._send(to, {"type": "template",

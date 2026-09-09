@@ -10,3 +10,6 @@ twilio
 apscheduler
 pytest
 python-multipart
+# AI agent (LangChain + Groq - FareBeep/agent.py)
+langchain-groq
+langchain-core

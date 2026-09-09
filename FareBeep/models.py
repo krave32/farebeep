@@ -100,13 +100,16 @@ class ChatState(Base):
                                                  #  flight_date, fares: [...]}
     pending_fare = Column(JSON, nullable=True)   # {origin_iata, destination_iata, date}
     pending_requote = Column(JSON, nullable=True)  # {origin_iata, destination_iata,
-                                                   #  flight_date, fare} - waiting for the
-                                                   #  user's "yes" after a price move
+                                                    #  flight_date, fare} - waiting for the
+                                                    #  user's "yes" after a price move
+    agent_history = Column(JSON, nullable=True)    # [{role, content}...] - the
+                                                    #  Groq agent's rolling chat
+                                                    #  memory (last turns only)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 # ---------------------------------------------------------------------------
-# fare_ledger - THE SHARED LEDGER (community cache, 15-min TTL)
+# fare_ledger - THE SHARED LEDGER (community cache, 8-15 min TTL)
 # One row per (origin, destination, flight_date). Upsert target for search.py.
 # ---------------------------------------------------------------------------
 class FareLedger(Base):
@@ -160,7 +163,7 @@ class BookingSession(Base):
       flight_details - JSONB snapshot of {airline, route, net_price, source}
       total_price    - what the user paid (fare + ARHA markup + fee)
       status         - pending | paid | expired | failed
-      expires_at     - created_at + 10 minutes (the price-lock window)
+      expires_at     - card: created_at + 10m; otherwise + 13m (bank buffer)
     """
 
     __tablename__ = "booking_sessions"
@@ -179,7 +182,7 @@ class BookingSession(Base):
     flight_details = Column(JSON, nullable=True)  # {airline, route, net_price, source}
     currency = Column(String, default="NGN")
     status = Column(String, default=SessionStatus.PENDING.value)
-    expires_at = Column(DateTime(timezone=True))  # created_at + 10 minutes
+    expires_at = Column(DateTime(timezone=True))  # card +10m / otherwise +13m
     payment_ref = Column(String, unique=True, index=True)
     paystack_access_code = Column(String, nullable=True)
     callback_url = Column(String, nullable=True)

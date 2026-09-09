@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from FareBeep.alerts import SubscriptionMonitor
+from FareBeep.alerts import SubscriptionMonitor, target_realism_note
 from FareBeep.brain import Intent, _build_intent
 from FareBeep.models import Base, Subscription, User, utcnow
 
@@ -65,8 +65,11 @@ class FakeNotifier:
         return True
 
 
-def make_monitor(db, board, notifier=None, clock=None):
+def make_monitor(db, board, notifier=None, clock=None, fresh_board=None):
+    """fresh_board defaults to the same board - tests that don't care about
+    the honesty gate get a fresh check that always re-confirms."""
     return SubscriptionMonitor(db, fare_provider=board,
+                               fresh_provider=fresh_board or board,
                                notifier=notifier or FakeNotifier(),
                                clock=clock or utcnow)
 
@@ -200,6 +203,64 @@ def test_target_dedupe_rearms_after_recovery(db, user):
 
 
 # ---------------------------------------------------------------------------
+# the honesty gate: one LIVE re-check before any Beep goes out
+# ---------------------------------------------------------------------------
+def test_beep_held_when_fresh_price_bounced_back(db, user):
+    """Periodic check sees a drop, but the live re-check shows the price
+    already bounced back - the user must NOT be notified."""
+    board = FareBoard({f"LOS-ABV-{PROBE_DATE}": 90000.0})
+    fresh = FareBoard({f"LOS-ABV-{PROBE_DATE}": 90000.0})
+    notifier = FakeNotifier()
+    m = make_monitor(db, board, notifier, fresh_board=fresh)
+    m.subscribe(user.user_id, "LOS", "ABV")
+    m.run_cycle()                                   # baseline 90,000
+
+    board.prices[f"LOS-ABV-{PROBE_DATE}"] = 80000.0  # -11% on the ledger
+    fresh.prices[f"LOS-ABV-{PROBE_DATE}"] = 83000.0  # live says 83,000
+    assert m.run_cycle() == 0
+    assert notifier.sent == []
+    assert db.query(Subscription).one().last_price == 83000.0  # baseline floated
+
+    board.prices[f"LOS-ABV-{PROBE_DATE}"] = 74000.0  # a genuine new dip
+    fresh.prices[f"LOS-ABV-{PROBE_DATE}"] = 74000.0
+    assert m.run_cycle() == 1
+    assert "74,000" in notifier.sent[0][1]
+
+
+def test_beep_carries_the_fresh_price_not_the_stale_one(db, user):
+    """The alert text must quote the LIVE price, never the periodic one."""
+    board = FareBoard({f"LOS-ABV-{PROBE_DATE}": 90000.0})
+    fresh = FareBoard({f"LOS-ABV-{PROBE_DATE}": 90000.0})
+    notifier = FakeNotifier()
+    m = make_monitor(db, board, notifier, fresh_board=fresh)
+    m.subscribe(user.user_id, "LOS", "ABV")
+    m.run_cycle()
+
+    board.prices[f"LOS-ABV-{PROBE_DATE}"] = 78000.0
+    fresh.prices[f"LOS-ABV-{PROBE_DATE}"] = 76000.0  # live is lower still
+    assert m.run_cycle() == 1
+    body = notifier.sent[0][1]
+    assert "76,000" in body
+    assert "78,000" not in body
+
+
+def test_beep_held_when_live_check_fails(db, user):
+    """The live re-check returned nothing - a stale price is never beeped,
+    but the observed number still floats the baseline."""
+    board = FareBoard({f"LOS-ABV-{PROBE_DATE}": 90000.0})
+    fresh = FareBoard({})                            # engine down live
+    notifier = FakeNotifier()
+    m = make_monitor(db, board, notifier, fresh_board=fresh)
+    m.subscribe(user.user_id, "LOS", "ABV")
+    m.run_cycle()
+
+    board.prices[f"LOS-ABV-{PROBE_DATE}"] = 80000.0
+    assert m.run_cycle() == 0
+    assert notifier.sent == []
+    assert db.query(Subscription).one().last_price == 80000.0
+
+
+# ---------------------------------------------------------------------------
 # probing + robustness
 # ---------------------------------------------------------------------------
 def test_date_scoped_subscription_probes_its_date(db, user):
@@ -268,3 +329,61 @@ def test_build_intent_rejects_bad_target_price():
         "alert me when it gets cheap")
     assert intent.intent == "subscribe"
     assert intent.target_price is None
+
+
+def test_broken_route_holds_but_cycle_continues(db, user):
+    """One route's live re-check explodes: its alert is held (baseline
+    floats), the other route still beeps - the cycle never aborts."""
+    board = FareBoard({f"LOS-ABV-{PROBE_DATE}": 90000.0,
+                       f"LOS-PHC-{PROBE_DATE}": 90000.0})
+
+    def flaky(origin, destination, flight_date):
+        if destination == "ABV":
+            raise RuntimeError("supplier down")
+        return {"price": 80000.0, "currency": "NGN", "airline": "Air Peace",
+                "verify_link": "https://x"}
+
+    m = make_monitor(db, board, fresh_board=flaky)
+    m.subscribe(user.user_id, "LOS", "ABV")
+    m.subscribe(user.user_id, "LOS", "PHC")
+    assert m.run_cycle() == 0       # baselines set, nothing to beep
+
+    board.prices[f"LOS-ABV-{PROBE_DATE}"] = 80000.0
+    board.prices[f"LOS-PHC-{PROBE_DATE}"] = 80000.0
+    assert m.run_cycle() == 1       # ABV held, PHC beeped
+    assert len(m.notifier.sent) == 1
+    assert "PHC" in m.notifier.sent[0][1] or "Port Harcourt" in m.notifier.sent[0][1]
+
+
+# ---------------------------------------------------------------------------
+# fairytale-target guard - warn, never block
+# ---------------------------------------------------------------------------
+def _seed_ledger(db, price=100000.0):
+    from FareBeep.models import FareLedger
+    db.add(FareLedger(origin="LOS", destination="ABV",
+                      flight_date=(utcnow() + timedelta(days=3))
+                      .strftime("%Y-%m-%d"),
+                      price=price, currency="NGN", airline="Air Peace",
+                      last_updated=utcnow()))
+    db.commit()
+
+
+def test_realism_no_target_no_note(db):
+    assert target_realism_note(db, "LOS", "ABV", None) is None
+
+
+def test_realism_no_known_fares_no_note(db):
+    assert target_realism_note(db, "LOS", "ABV", 50000.0) is None
+
+
+def test_realism_sane_target_no_note(db):
+    _seed_ledger(db)
+    assert target_realism_note(db, "LOS", "ABV", 95000.0) is None
+    assert target_realism_note(db, "LOS", "ABV", 70000.0) is None
+
+
+def test_realism_fairytale_target_warns(db):
+    _seed_ledger(db)
+    note = target_realism_note(db, "LOS", "ABV", 50000.0)
+    assert note is not None
+    assert "50%" in note and "100,000" in note and "50,000" in note

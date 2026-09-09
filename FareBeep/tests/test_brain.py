@@ -8,9 +8,13 @@ from FareBeep import brain
 from FareBeep.brain import Intent
 
 
-def test_local_parser_resolves_route_without_gemini():
+def test_local_parser_resolves_route_without_gemini(monkeypatch):
     """No key, no network: 'Lagos to Abuja tomorrow' must STILL become a fare
-    request (the old behavior degraded to a help menu - that's gone)."""
+    request (the old behavior degraded to a help menu - that's gone).
+    The module key is nulled so api_key=None really means offline even
+    when a developer .env has a live Gemini key (otherwise this test
+    spends real API calls and gets UTC-based dates)."""
+    monkeypatch.setattr(brain, "GEMINI_API_KEY", None)
     intent = brain.parse_intent("Lagos to Abuja tomorrow", api_key=None)
     assert intent.intent == "fare"
     assert intent.origin_iata == "LOS"
@@ -33,16 +37,22 @@ def test_local_parser_next_week_weekday_is_the_following_week():
 
 
 def test_local_parser_bare_ordinal_day_future_this_month():
-    """User asks for 'the 31st' (no month) on Aug 13 -> Aug 31 same year."""
+    """User asks for 'the 31st' (no month) -> the next upcoming 31st
+    after today (rolls months/years as needed)."""
     today = date.today()
-    try:
-        expected = date(today.year, 8, 31)
-        if expected < today:
-            expected = date(today.year + 1, 8, 31)
-    except ValueError:
-        return
+    year, month = today.year, today.month
+    while True:
+        try:
+            candidate = date(year, month, 31)
+        except ValueError:
+            candidate = None
+        if candidate is not None and candidate > today:
+            break
+        month += 1
+        if month > 12:
+            month, year = 1, year + 1
     intent = brain._local_parse("fare lagos to abuja on the 31st")
-    assert intent.date == expected.isoformat()
+    assert intent.date == candidate.isoformat()
 
 
 def test_local_parser_bare_ordinal_day_past_rolls_to_next_month():
@@ -468,12 +478,12 @@ def test_compose_reply_humanizes_on_success():
 # ---------------------------------------------------------------------------
 def _pick_fares():
     return [
-        {"airline": "Dana Air", "departs_at": "06:00",
-         "flight_number": "9J 333", "price": 98000.0},
+        {"airline": "Rano Air", "departs_at": "06:00",
+         "flight_number": "RN 303", "price": 98000.0},
         {"airline": "Air Peace", "departs_at": "07:10",
          "flight_number": "P4 111", "price": 118500.0},
         {"airline": "Green Africa", "departs_at": "08:00",
-         "flight_number": "9J 222", "price": 154000.0},
+         "flight_number": "Q9 222", "price": 154000.0},
     ]
 
 
@@ -487,7 +497,7 @@ def test_local_resolve_pick_airline_time_price():
     assert brain._local_resolve_pick("Air Peace please", _pick_fares()) == 2
     assert brain._local_resolve_pick("the 7am flight", _pick_fares()) == 2
     assert brain._local_resolve_pick("the cheapest", _pick_fares()) == 1
-    assert brain._local_resolve_pick("the Dana one", _pick_fares()) == 1
+    assert brain._local_resolve_pick("the Rano one", _pick_fares()) == 1
 
 
 def test_local_resolve_pick_ambiguous_or_none():
@@ -575,7 +585,7 @@ def test_compose_ranked_reply_without_key_returns_greeted_template(monkeypatch):
                                      "2026-08-29")
     assert out.startswith("Beep! 🎫")
     assert "Here's what I found Lagos -> Abuja on 2026-08-29" in out
-    assert "1. Dana Air, leaves 06:00 - ₦98,000" in out
+    assert "1. Rano Air, leaves 06:00 - ₦98,000" in out
     assert "Which one would you like? Reply 1, 2 or 3." in out
 
 
@@ -584,7 +594,7 @@ def test_compose_ranked_reply_failure_returns_greeted_template():
                                      "2026-08-29", api_key="x", model="y",
                                      http_client=_FailingClient())
     assert out.startswith("Beep! 🎫")
-    assert "1. Dana Air, leaves 06:00 - ₦98,000" in out
+    assert "1. Rano Air, leaves 06:00 - ₦98,000" in out
 
 
 def test_compose_ranked_reply_narrates_on_success():
@@ -595,7 +605,7 @@ def test_compose_ranked_reply_narrates_on_success():
         def json(self):
             return {"candidates": [{"content": {"parts": [
                 {"text": "Hi Damilola! 😊 Good options for that day - the "
-                         "Dana at 06:00 is the best value at ₦98,000. Reply "
+                         "Rano at 06:00 is the best value at ₦98,000. Reply "
                          "1, 2 or 3 to lock one."}]}}]}
 
     class _FakeClient:
@@ -624,7 +634,7 @@ def test_compose_unclear_pick_reply_without_key_echoes_and_relists(monkeypatch):
     assert out.startswith("Beep! 🎫")
     assert "didn't quite catch" in out
     assert '"the purple one"' in out          # echoes what the user said
-    assert "1. Dana Air, leaves 06:00 - ₦98,000" in out
+    assert "1. Rano Air, leaves 06:00 - ₦98,000" in out
     assert "Which one would you like? Reply 1, 2 or 3." in out
 
 
@@ -645,7 +655,7 @@ def test_compose_unclear_pick_reply_tailors_on_success():
         def json(self):
             return {"candidates": [{"content": {"parts": [
                 {"text": "Hi Damilola! 😊 Sorry - I don't have a 'purple' "
-                         "option today. Here's what's available:\n1. Dana "
+                         "option today. Here's what's available:\n1. Rano "
                          "Air, leaves 06:00 - ₦98,000\n2. Air Peace, leaves "
                          "07:10 - ₦118,500\n3. Green Africa, leaves 08:00 - "
                          "₦154,000\n\nWhich one would you like?"}]}}]}

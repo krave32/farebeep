@@ -25,21 +25,30 @@ from FareBeep.models import Base
 
 ADVISORY_LOCK_KEY = 8391028
 
+# Held leader state: keep BOTH referenced for the process lifetime. The
+# advisory lock dies with the connection, and the connection dies with
+# the session - dropping either reference lets GC silently release the
+# lock and a second replica starts doubling the worker loops.
+_HELD_LEADER = None
+
 
 def _leader_lock():
     """Try to become the loops leader. Returns a held connection or None.
 
     pg_try_advisory_lock never blocks; the lock dies with the connection,
     so a crashed leader releases it automatically."""
-    conn = SessionLocal().connection()
+    global _HELD_LEADER
+    session = SessionLocal()
+    conn = session.connection()
     try:
         if conn.execute(text("select pg_try_advisory_lock(:k)"),
                         {"k": ADVISORY_LOCK_KEY}).scalar():
+            _HELD_LEADER = (session, conn)
             return conn
     except Exception:
         logger.exception("Advisory lock check failed")
     try:
-        conn.close()
+        session.close()
     except Exception:
         pass
     return None

@@ -63,6 +63,52 @@ def test_create_booking_mission_schema(db, user, fake_paystack_link):
     assert result["expires_at"] == session.expires_at
 
 
+def test_ttl_defaults_to_13_minutes_when_method_unknown(db, user, fake_paystack_link):
+    """Unknown payment method -> 13-minute lock: the internal buffer for
+    slow bank-transfer webhooks (the user still sees the 10-minute promise)."""
+    clock = [utcnow()]
+    svc = BookingService(db, clock=lambda: clock[0])
+
+    result = svc.create_booking(
+        user.user_id, "LOS", "ABV", "2026-08-21", 90000.0)
+
+    assert result["session"].expires_at - clock[0] == timedelta(minutes=13)
+
+
+def test_ttl_bank_transfer_is_13_minutes(db, user, fake_paystack_link):
+    clock = [utcnow()]
+    svc = BookingService(db, clock=lambda: clock[0])
+
+    result = svc.create_booking(
+        user.user_id, "LOS", "ABV", "2026-08-21", 90000.0,
+        payment_method="bank_transfer")
+
+    assert result["session"].expires_at - clock[0] == timedelta(minutes=13)
+
+
+def test_ttl_card_is_10_minutes(db, user, fake_paystack_link):
+    clock = [utcnow()]
+    svc = BookingService(db, clock=lambda: clock[0])
+
+    result = svc.create_booking(
+        user.user_id, "LOS", "ABV", "2026-08-21", 90000.0,
+        payment_method="card")
+
+    assert result["session"].expires_at - clock[0] == timedelta(minutes=10)
+
+
+def test_explicit_ttl_minutes_still_wins(db, user, fake_paystack_link):
+    """Ops/tests can still pin a window - explicit ttl beats the method."""
+    clock = [utcnow()]
+    svc = BookingService(db, ttl_minutes=10, clock=lambda: clock[0])
+
+    result = svc.create_booking(
+        user.user_id, "LOS", "ABV", "2026-08-21", 90000.0,
+        payment_method="bank_transfer")
+
+    assert result["session"].expires_at - clock[0] == timedelta(minutes=10)
+
+
 def test_webhook_after_expiry_triggers_refund_required(db, user):
     """THE CORE RULE: paid after expires_at -> EXPIRED + REFUND REQUIRED.
     The airline API must NOT be called (no ticket issued)."""

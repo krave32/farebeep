@@ -45,6 +45,8 @@ META_APP_SECRET = _get("META_APP_SECRET")
 META_API_VERSION = _get("META_API_VERSION", "v20.0")
 META_TEMPLATE_FLIGHT_STATUS = _get("META_TEMPLATE_FLIGHT_STATUS",
                                    "farebeep_flight_status")
+META_TEMPLATE_PRICE_DROP = _get("META_TEMPLATE_PRICE_DROP",
+                                "farebeep_price_drop")
 
 # --- Messaging provider switch ---
 # "meta" (production path: Meta Cloud API direct, no BSP needed) or
@@ -115,6 +117,28 @@ TIQWA_BASE_URL = _get(
     "https://sandbox.tiqwa.com/v1/flight" if TIQWA_ENV == "sandbox"
     else "https://prod.tiqwa.com/v1/flight")
 
+# --- ElevenLabs Conversational AI (the voice/chat brain) ---
+# The agent connects to WhatsApp natively (dashboard: Integrations ->
+# WhatsApp) and calls /tools/search + /tools/reserve as webhook tools.
+# ELEVENLABS_TOOL_SECRET is the shared secret you paste into each tool's
+# custom auth headers in the ElevenLabs dashboard (header
+# X-FareBeep-Tool-Secret). Unset = tools stay open (dev only).
+ELEVENLABS_AGENT_ID = _get("ELEVENLABS_AGENT_ID")
+ELEVENLABS_TOOL_SECRET = _get("ELEVENLABS_TOOL_SECRET")
+
+# --- Groq + LangChain (FareBeep's own AI agent - agent.py) ---
+# Unset GROQ_API_KEY = the agent stays off and the Gemini brain answers.
+GROQ_API_KEY = _get("GROQ_API_KEY")
+GROQ_MODEL = _get("GROQ_MODEL", "openai/gpt-oss-120b")
+
+# --- Primary inventory: 247Travels Travels247 (Xown Solutions) ---
+# Search (external) -> Pricing (verify) -> Reserve (PNR). JWT login with
+# the partner api-role account; the 900s access token is cached and the
+# client re-logs-in before it dies (well under the 10/min/IP limit).
+TRAVELS247_BASE_URL = _get("TRAVELS247_BASE_URL", "https://247travels.com/api")
+TRAVELS247_EMAIL = _get("TRAVELS247_EMAIL")
+TRAVELS247_PASSWORD = _get("TRAVELS247_PASSWORD")
+
 # --- Business rules ---
 MARKUP_NAIRA = _get_float("MARKUP_NAIRA", 3000.0)
 PROCESSING_FEE_RATE = _get_float("PROCESSING_FEE_RATE", 0.015)
@@ -128,13 +152,14 @@ PAYSTACK_FEE_CAP_NAIRA = _get_float("PAYSTACK_FEE_CAP_NAIRA", 2000.0)
 # Who gets the "Refund Required" alert when a payment lands after the
 # 10-minute window closed (a phone number or Telegram chat_id as string).
 ADMIN_ALERT_PHONE = _get("ADMIN_ALERT_PHONE")
-BOOKING_TTL_MINUTES = _get_int("BOOKING_TTL_MINUTES", 10)
-LEDGER_TTL_MINUTES = _get_int("LEDGER_TTL_MINUTES", 20)
 STATUS_WATCH_LEAD_HOURS = _get_int("STATUS_WATCH_LEAD_HOURS", 3)
 STATUS_POLL_SECONDS = _get_int("STATUS_POLL_SECONDS", 300)
 # APScheduler worker (--scheduled mode): how often the TRACKING checks
 # (fare-drop Beeps) run; booking sweep + status watches stay on the fast loop.
 TRACKING_POLL_HOURS = _get_int("TRACKING_POLL_HOURS", 4)
+# Route warmer: top-route fares refreshed at most this often (minutes).
+# Each cycle costs len(routes) x len(days) 247travels searches.
+WARM_INTERVAL_MINUTES = _get_int("WARM_INTERVAL_MINUTES", 15)
 # Price guardrail: a one-way domestic fare above this (₦NGN) is treated as
 # an anomaly - the bot says prices are unusually high instead of quoting it.
 FARE_PRICE_GUARDRAIL_NGN = _get_float("FARE_PRICE_GUARDRAIL_NGN", 250000.0)

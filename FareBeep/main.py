@@ -2,23 +2,31 @@
 
 Endpoints:
   GET  /webhook/meta    - Meta handshake (hub.challenge echo after
-                          hub.verify_token check)
+                           hub.verify_token check)
   POST /webhook/meta    - Meta message receiver. X-Hub-Signature-256 is
-                          verified with HMAC-SHA256 over the RAW body using
-                          META_APP_SECRET (the requirement: `use hmac to
-                          verify X-Hub-Signature-256`).
+                           verified with HMAC-SHA256 over the RAW body using
+                           META_APP_SECRET (the requirement: `use hmac to
+                           verify X-Hub-Signature-256`).
   POST /webhook/twilio  - Twilio WhatsApp Sandbox receiver (test channel).
-                          X-Twilio-Signature is verified with the account
-                          auth token; the reply goes out via the REST API
-                          in a background task.
+                           X-Twilio-Signature is verified with the account
+                           auth token; the reply goes out via the REST API
+                           in a background task.
+  GET/POST /tools/search - ElevenLabs server tool: ledger-first fare lookup
+                           (ledger hit wins; Travels247 live on miss, UPSERTed).
+  POST /tools/reserve   - ElevenLabs server tool: live re-verify + 10-minute
+                           booking_session + Paystack link (payment FIRST -
+                           the Travels247 PNR is only issued in /webhook/paystack
+                           after charge.success).
   POST /webhook/paystack- Paystack transaction events (settles the
-                          10-minute booking loop).
+                           10-minute booking loop; issues the Travels247 PNR on
+                           success when a booking_token + travellers exist).
   GET  /health          - liveness.
 
 Run:  uvicorn FareBeep.main:app --port 8000
 """
 import hashlib
 import hmac
+import json
 import logging
 import os
 import re
@@ -27,21 +35,25 @@ import uuid
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
-from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
-                               RedirectResponse)
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               PlainTextResponse, RedirectResponse)
 from fastapi.staticfiles import StaticFiles
 
-from FareBeep import brain, chatstate
+from FareBeep import brain, cards, chatstate
 from FareBeep.config import (APP_BASE_URL, CONSENT_VERSION, MESSAGING_PROVIDER,
                              META_APP_SECRET, META_VERIFY_TOKEN,
-                             REQUOTE_TOLERANCE_NGN)
+                             REQUOTE_TOLERANCE_NGN, TRAVELS247_EMAIL,
+                             TRAVELS247_PASSWORD, ELEVENLABS_TOOL_SECRET,
+                             GROQ_API_KEY)
 from FareBeep.database import SessionLocal, init_db
-from FareBeep.iata import city_name
+from FareBeep.iata import city_name, resolve_iata
 from FareBeep.models import BookingSession, User, utcnow
-from FareBeep.notifier import get_notifier
+from FareBeep.notifier import MetaWhatsapp, get_notifier
 from FareBeep.payments import verify_paystack_signature
-from FareBeep.search import LedgerSearch
-from FareBeep.transactions import BookingService
+from FareBeep.search import LedgerOnlyEngine, LedgerSearch
+from FareBeep.travels247 import (Travels247Client, Travels247Error,
+                                     pick_cheapest)
+from FareBeep.transactions import BookingService, PaystackError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("farebeep.main")
@@ -117,10 +129,48 @@ async def meta_webhook(request: Request, background: BackgroundTasks):
     text = (message.get("text") or {}).get("body", "")
     phone = message.get("from", "")
 
+    # Flight-card + template taps (see FareBeep/cards.py): interactive
+    # button_reply/list_reply ids AND template quick-reply payloads
+    # (messages[].button.payload - the shape Meta uses for template
+    # buttons like the beep's "Book now"). pick:N reuses the "reply 1,
+    # 2, 3" gate, book is bare "BOOK", alert:N/beep:N subscribe or
+    # re-present. Unknown ids are ignored, never fed to the brain.
+    if phone:
+        interactive = message.get("interactive") or {}
+        tap_id = ((interactive.get("button_reply") or {}).get("id")
+                  or (interactive.get("list_reply") or {}).get("id")
+                  or (message.get("button") or {}).get("payload") or "")
+        if tap_id:
+            tap = cards.translate_tap(tap_id)
+            if tap is None:
+                logger.warning("Meta tap ignored: unknown button id %r", tap_id)
+                return Response(content="200 OK", media_type="text/plain")
+            if tap[0] == "alert":
+                background.add_task(_tap_alert_by_phone, phone, tap[1])
+                return Response(content="200 OK", media_type="text/plain")
+            if tap[0] == "beep":
+                background.add_task(_tap_beep_by_phone, phone, tap[1])
+                return Response(content="200 OK", media_type="text/plain")
+            text = str(tap[1]) if tap[0] == "pick" else "BOOK"
+
     # Ack Meta immediately (20s deadline); handle the message off-thread.
     if text and phone:
         background.add_task(_handle_incoming_message, phone, text)
     return Response(content="200 OK", media_type="text/plain")
+
+
+# Standalone greetings: the WHOLE message is the greeting, nothing else.
+# (A route question containing "hi" - "hi, lagos to abuja" - is not this.)
+_SESSION_GREETINGS = frozenset({
+    "hi", "hello", "hey", "yo", "good morning", "good afternoon",
+    "good evening", "hi there", "hello there", "hey there",
+})
+
+
+def _is_session_greeting(text: str) -> bool:
+    """True when the message is just a greeting (punctuation tolerated)."""
+    return (text or "").strip().lower().rstrip("!.").strip() \
+        in _SESSION_GREETINGS
 
 
 def _handle_incoming_message(phone: str, text: str) -> None:
@@ -129,6 +179,19 @@ def _handle_incoming_message(phone: str, text: str) -> None:
     try:
         try:
             user = _get_or_create_user(db, phone)
+
+            # GREETING RESET: sessions never end on their own, so a
+            # standalone hello starts a whole new one. Without this,
+            # stale quotes, ranked picks and pending follow-ups hijack
+            # the NEXT route ("hi" -> "Abuja" would answer a dead
+            # question from the old thread). Chat memory (who they are,
+            # what was discussed) stays - only live transactional state
+            # is wiped, so a greeting always opens a clean slate.
+            if _is_session_greeting(text):
+                chatstate.clear_pending_fare(db, user.phone)
+                chatstate.clear_pending_requote(db, user.phone)
+                chatstate.clear_last_fare(db, user.phone)
+                chatstate.clear_last_fares(db, user.phone)
 
             # PICK GATE (before the brain): a "1", "2" or "3" reply right
             # after a ranked fare list selects and locks THAT fare. Narrow:
@@ -165,6 +228,16 @@ def _handle_incoming_message(phone: str, text: str) -> None:
             # bare city ("abuja" after "where will you be flying from?") -
             # fill the missing piece and search, like a person would.
             if _fill_pending_fare(db, user, text):
+                return
+
+            # GROQ AGENT: when configured, the LangChain agent owns the
+            # turn end-to-end (tools included) and its reply goes out
+            # verbatim. The Gemini intent tree below is the fallback when
+            # GROQ_API_KEY is unset.
+            if GROQ_API_KEY:
+                from FareBeep import agent as fare_agent
+                _say(phone, fare_agent.agent_reply(db, user, text),
+                     user.name, humanized=True)
                 return
 
             intent = brain.parse_intent(text)
@@ -484,6 +557,7 @@ def _reply_fare(db, user: User, intent: brain.Intent) -> None:
              f"Reply BOOK to buy at ₦{_booking_total(fare['price']):,.0f} "
              f"(Paystack), or TRACK to get a Beep when it drops.",
              user.name)
+        _send_fare_cards(user, [fare], origin_iata, intent.destination_iata)
         return
 
     # Ranked list - one option per airline, NARRATED by the brain so it reads
@@ -501,6 +575,7 @@ def _reply_fare(db, user: User, intent: brain.Intent) -> None:
         fares, origin, destination, fares[0]["flight_date"],
         user_name=user.name)
     _say(user.phone, msg, user.name, humanized=True)
+    _send_fare_cards(user, fares, origin_iata, intent.destination_iata)
 
 
 def _booking_total(airline_price: float) -> float:
@@ -514,7 +589,8 @@ def _reply_booking(db, user: User, intent: brain.Intent,
 
     1. FORCE REFRESH: the Shared Ledger is ignored; SerpApi is queried
        LIVE so the seat exists at the quoted price right now.
-    2. Session: a booking_session row is saved with expires_at = now + 10m.
+    2. Session: a booking_session row is saved with expires_at = now +
+       13m by default (10m once the payment method is card).
     3. The WhatsApp/TG call: the Paystack TEST link + the "Price Locked"
        message, with the 10-minute expiry stated up front.
 
@@ -717,10 +793,131 @@ def _reply_subscribe(db, user: User, intent: brain.Intent) -> None:
     if intent.target_price is not None:
         msg = (f"✅ Beep armed: {origin} -> {destination}\n"
                f"We'll text you the moment it hits ₦{intent.target_price:,.0f} or lower.")
+        from FareBeep.alerts import target_realism_note
+        note = target_realism_note(db, origin_iata, destination_iata,
+                                   intent.target_price)
+        if note:
+            msg += f"\n\n{note}"
     else:
         msg = (f"✅ Beep armed: {origin} -> {destination}\n"
                f"We'll text you when the fare drops by 10% or more.")
     _say(user.phone, msg, user.name)
+
+
+def _tap_beep_by_phone(phone: str, sub_id: int) -> None:
+    """Background task for a beep template's "Book now" tap: re-present
+    that subscription's route fresh (never books blind). Own session,
+    like _handle_incoming_message - never the request's."""
+    db = SessionLocal()
+    try:
+        try:
+            user = _get_or_create_user(db, phone)
+            _tap_beep(db, user, sub_id)
+        except Exception as e:
+            logger.error("Beep-tap handling failed (%s): %s", phone, e)
+    finally:
+        db.close()
+
+
+def _tap_beep(db, user: User, sub_id: int) -> None:
+    """"Book now" from a price-drop Beep: look up the subscription (it
+    must belong to THIS user - foreign ids are ignored silently) and
+    run a fresh fare search for its route+date. The user then picks
+    and books from live numbers, exactly like a typed search."""
+    from FareBeep.models import Subscription
+    sub = db.query(Subscription).filter_by(id=sub_id).first()
+    if sub is None:
+        _say(user.phone,
+             "That alert has expired - send me your route and I'll "
+             "check fresh fares for you.",
+             user.name)
+        return
+    if sub.user_id != user.user_id:
+        logger.warning("Beep tap rejected: sub %s not owned by %s",
+                       sub_id, user.phone)
+        return
+    intent = brain.Intent(intent="fare",
+                          origin=city_name(sub.origin),
+                          destination=city_name(sub.destination),
+                          date=sub.target_date)
+    logger.info("Beep tap: fresh search %s->%s for %s",
+                sub.origin, sub.destination, user.phone)
+    _reply_fare(db, user, intent)
+
+
+def _tap_alert_by_phone(phone: str, idx: int) -> None:
+    """Background task for a card's "Set alert" tap: subscribe from the
+    fare the user was just shown (ranked list first, single quote next).
+    Own session, like _handle_incoming_message - never the request's."""
+    db = SessionLocal()
+    try:
+        try:
+            user = _get_or_create_user(db, phone)
+            _tap_alert(db, user, idx)
+        except Exception as e:
+            logger.error("Alert-tap handling failed (%s): %s", phone, e)
+    finally:
+        db.close()
+
+
+def _tap_alert(db, user: User, idx: int) -> None:
+    """Subscribe the tapped fare's route+date, target = its price ("beep
+    me below this"). idx is 1-based like the cards and the pick gate
+    (alert:1 = first fare); 0 = single-fare card backed by last_fare.
+    Mirrors _reply_subscribe's confirm wording."""
+    from FareBeep.alerts import SubscriptionMonitor
+    ctx = chatstate.get_last_fares(db, user.phone) or {}
+    fares = ctx.get("fares") or []
+    fare = fares[idx - 1] if 1 <= idx <= len(fares) else None
+    origin_iata = ctx.get("origin_iata")
+    destination_iata = ctx.get("destination_iata")
+    if fare is None:
+        # Single-fare card (alert:0): the quote lives in last_fare.
+        single = chatstate.get_last_fare(db, user.phone) or {}
+        if not single.get("price"):
+            _say(user.phone,
+                 "That fare list has expired - ask me for the fares again "
+                 "and I'll re-run the search.",
+                 user.name)
+            return
+        fare, origin_iata, destination_iata = (
+            single, single.get("origin_iata"), single.get("destination_iata"))
+    if not (origin_iata and destination_iata):
+        _say(user.phone,
+             "That fare list has expired - ask me for the fares again "
+             "and I'll re-run the search.",
+             user.name)
+        return
+    monitor = SubscriptionMonitor(db)
+    monitor.subscribe(user.user_id, origin_iata, destination_iata,
+                      target_price=fare.get("price"),
+                      target_date=fare.get("flight_date"))
+    _say(user.phone,
+         f"✅ Beep armed: {city_name(origin_iata)} -> "
+         f"{city_name(destination_iata)}\n"
+         f"We'll text you the moment it hits "
+         f"₦{fare.get('price', 0):,.0f} or lower.",
+         user.name)
+
+
+def _send_fare_cards(user: User, fares: list, origin_iata: str,
+                     destination_iata: str) -> None:
+    """Follow a fare text with tappable flight cards (Meta channel only -
+    other channels keep the text they already got). One card per fare,
+    logo on top, price under, Book + Set-alert buttons. idx is 1-based
+    so taps reuse the "reply 1, 2, 3" pick gate; a lone fare uses the
+    bare BOOK / last_fare context instead."""
+    if not isinstance(notifier, MetaWhatsapp):
+        return
+    single = len(fares) == 1
+    for i, fare in enumerate(fares[:3], start=1):
+        idx = 0 if single else i
+        notifier.send_interactive_card(
+            user.phone,
+            body=cards.card_body(fare, origin_iata, destination_iata),
+            buttons=cards.card_buttons(fare, idx),
+            image_url=cards.logo_for(fare.get("airline")),
+            footer="FareBeep \u2022 verified just now")
 
 
 def _reply_unsubscribe(db, user: User) -> None:
@@ -825,6 +1022,301 @@ async def telegram_verify(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# ElevenLabs Server Tools - the conversational agent's fare API
+# ---------------------------------------------------------------------------
+async def _json_body(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except Exception:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _as_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_dict(value) -> dict:
+    """Accept a dict or a JSON string (ElevenLabs declares objects to its
+    model as type string, so callers send '{"adults":1,...}' as text).
+    Anything else -> {} (callers apply their own defaults)."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _verify_tool_auth(request: Request) -> bool:
+    """Shared-secret check for ElevenLabs webhook-tool calls.
+
+    In the ElevenLabs dashboard each tool gets a custom auth header
+    (X-FareBeep-Tool-Secret: <ELEVENLABS_TOOL_SECRET>). When the secret
+    is unset the tools stay open (local dev only - production must set
+    it, otherwise anyone on the internet can trigger bookings).
+    """
+    if not ELEVENLABS_TOOL_SECRET:
+        logger.warning("ELEVENLABS_TOOL_SECRET unset - /tools/* open")
+        return True
+    return hmac.compare_digest(
+        request.headers.get("X-FareBeep-Tool-Secret", ""),
+        ELEVENLABS_TOOL_SECRET)
+
+
+def _tool_fare_summary(fare: dict, source: str, origin: str,
+                       destination: str, flight_date: str) -> dict:
+    """Human-readable fare summary for the AI to present (Airline, Time,
+    Price), plus the machine fields it needs to book (booking_token)."""
+    airline = fare.get("airline_name") or fare.get("airline") or "Airline"
+    legs = ""
+    if fare.get("departure_time") or fare.get("arrival_time"):
+        legs = (f", {fare.get('departure_code') or origin} "
+                f"{fare.get('departure_time') or ''}->"
+                f"{fare.get('arrival_code') or destination} "
+                f"{fare.get('arrival_time') or ''}")
+    flight = f" {fare['flight_no']}" if fare.get("flight_no") else ""
+    price = fare["price"]
+    return {
+        "found": True,
+        "source": source,
+        "summary": (f"{airline}{flight}, {origin}->{destination} on "
+                    f"{flight_date}{legs}, NGN {price:,.0f}"),
+        "airline": airline,
+        "flight_no": fare.get("flight_no"),
+        "departs_at": fare.get("departure_time"),
+        "arrives_at": fare.get("arrival_time"),
+        "price_ngn": price,
+        "currency": fare.get("currency") or "NGN",
+        "booking_token": (fare.get("booking_token")
+                          if source == "247travels" else None),
+        "origin": origin,
+        "destination": destination,
+        "flight_date": flight_date,
+        "note": ("Prices are unusually high right now."
+                 if fare.get("above_guardrail") else None),
+    }
+
+
+@app.api_route("/tools/search", methods=["GET", "POST"])
+async def tools_search(request: Request):
+    """ElevenLabs server tool: ledger-first fare lookup.
+
+    Args (query or JSON): origin, destination (city or IATA), flight_date
+    (YYYY-MM-DD), adults (default 1), phone (optional, log attribution).
+    A ledger hit (<500ms, free) wins;
+    on a miss Travels247 is queried live (search_mode=external) and the
+    cheapest offer is UPSERTed into the ledger for the community.
+    """
+    if not _verify_tool_auth(request):
+        logger.warning("/tools/search REJECTED: bad tool secret")
+        return JSONResponse(status_code=403, content={
+            "found": False, "error": "forbidden"})
+    args = dict(request.query_params) if request.method == "GET" \
+        else await _json_body(request)
+    origin = resolve_iata(args.get("origin") or "")
+    destination = resolve_iata(args.get("destination") or "")
+    flight_date = str(args.get("flight_date") or "")[:10]
+    adults = _as_int(args.get("adults"), 1)
+    adults = max(1, adults)  # supplier rejects 0/negative passenger counts
+    caller = str(args.get("phone") or "")
+    if not origin or not destination or not flight_date:
+        return JSONResponse(status_code=422, content={
+            "found": False,
+            "error": "origin, destination and flight_date (YYYY-MM-DD) "
+                     "are required"})
+    db = SessionLocal()
+    try:
+        ledger = LedgerSearch(db, live=LedgerOnlyEngine())
+        hit = ledger.search(origin, destination, flight_date, verify=False)
+        if hit is not None:
+            logger.info("tools/search ledger hit %s->%s %s (caller=%s)",
+                        origin, destination, flight_date, caller)
+            return _tool_fare_summary(hit, "ledger", origin, destination,
+                                      flight_date)
+        sky = Travels247Client()
+        try:
+            offers = await sky.search_offers(origin, destination,
+                                             flight_date, adults=adults)
+        finally:
+            await sky.close()
+        best = pick_cheapest(offers)
+        if best is None:
+            return {"found": False, "source": "247travels",
+                    "error": f"no live offers for {origin}->{destination} "
+                             f"on {flight_date}"}
+        # The ledger keeps the price (no public URL exists for a Travels247
+        # offer, so verify_link stays empty; the booking_token travels in
+        # this response, and /tools/reserve mints a fresh one anyway).
+        # Surge-guarded, no 90s hold on the voice path (reserve re-verifies).
+        ledger._verify_and_upsert(origin, destination, flight_date, {
+            "price": best["price"], "currency": best["currency"],
+            "airline": best["airline_name"], "verify_link": None},
+            verify=False)
+        return _tool_fare_summary(best, "247travels", origin, destination,
+                                  flight_date)
+    finally:
+        db.close()
+
+
+@app.post("/tools/reserve")
+async def tools_reserve(request: Request):
+    """ElevenLabs server tool: price-lock + Paystack link (payment FIRST).
+
+    Travels247 creates a LIVE PNR on every /reserve call, so FareBeep NEVER
+    calls Travels247 reserve here - it re-verifies the price live, opens the
+    10-minute booking_session (13 for bank transfer), and returns the
+    Paystack link. The PNR is issued in /webhook/paystack after
+    charge.success. Body: {phone, booking_token? | origin+destination+
+    flight_date, passengers?, travellers?, payment_method?}.
+    """
+    if not _verify_tool_auth(request):
+        logger.warning("/tools/reserve REJECTED: bad tool secret")
+        return JSONResponse(status_code=403, content={
+            "locked": False, "error": "forbidden"})
+    body = await _json_body(request)
+    phone = str(body.get("phone") or "").strip()
+    if not phone:
+        return JSONResponse(status_code=422, content={
+            "locked": False, "error": "phone is required"})
+    pax = _as_dict(body.get("passengers"))
+    adults = _as_int(pax.get("adults"), 1)
+    adults = max(1, adults)  # supplier rejects 0/negative passenger counts
+    children = _as_int(pax.get("children"), 0)
+    infants = _as_int(pax.get("infants"), 0)
+    db = SessionLocal()
+    try:
+        user = _get_or_create_user(db, phone)
+        sky = Travels247Client()
+        try:
+            if body.get("booking_token"):
+                origin = resolve_iata(body.get("origin") or "")
+                destination = resolve_iata(body.get("destination") or "")
+                flight_date = str(body.get("flight_date") or "")[:10]
+                airline = body.get("airline")
+                if not origin or not destination or not flight_date:
+                    return JSONResponse(status_code=422, content={
+                        "locked": False,
+                        "error": "token bookings still need origin, "
+                                 "destination and flight_date for the lock"})
+                priced = await sky.verify_price(
+                    body["booking_token"], adults=adults,
+                    children=children, infants=infants)
+            else:
+                origin = resolve_iata(body.get("origin") or "")
+                destination = resolve_iata(body.get("destination") or "")
+                flight_date = str(body.get("flight_date") or "")[:10]
+                if not origin or not destination or not flight_date:
+                    return JSONResponse(status_code=422, content={
+                        "locked": False,
+                        "error": "booking_token or origin+destination+"
+                                 "flight_date is required"})
+                offers = await sky.search_offers(
+                    origin, destination, flight_date, adults=adults,
+                    children=children, infants=infants)
+                best = pick_cheapest(offers)
+                if best is None:
+                    return {"locked": False, "source": "247travels",
+                            "error": f"no live offers for "
+                                     f"{origin}->{destination} on {flight_date}"}
+                priced = await sky.verify_price(
+                    best["booking_token"], adults=adults,
+                    children=children, infants=infants)
+                airline = best["airline_name"]
+        except Travels247Error as e:
+            logger.warning("tools/reserve Travels247 failed: %s", e)
+            return JSONResponse(status_code=502, content={
+                "locked": False, "error": f"live price check failed: {e}"})
+        finally:
+            await sky.close()
+        bookings = BookingService(db)
+        try:
+            result = bookings.create_booking(
+                user.user_id, origin, destination, flight_date,
+                priced["verified_price"], airline=airline, source="247travels",
+                payment_method=body.get("payment_method"))
+        except PaystackError as e:
+            logger.warning("tools/reserve Paystack link failed: %s", e)
+            return JSONResponse(status_code=502, content={
+                "locked": False, "error": f"payment link failed: {e}"})
+        session = result["session"]
+        details = dict(session.flight_details or {})
+        details.update({
+            "booking_token": priced["booking_token"],
+            "passengers": {"adults": adults, "children": children,
+                           "infants": infants},
+            "travellers": _as_dict(body.get("travellers")),
+        })
+        session.flight_details = details
+        db.commit()
+        total = result["total_amount"]
+        link = result["payment_link"]
+        return {
+            "locked": True,
+            "payment_link": link,
+            "total_amount": total,
+            "payment_ref": session.payment_ref,
+            "expires_at": result["expires_at"].isoformat(),
+            "summary": (f"Locked {airline or 'flight'} {origin}->"
+                        f"{destination} {flight_date} at NGN {total:,.0f}. "
+                        f"Pay within 10 minutes: {link}"),
+        }
+    finally:
+        db.close()
+
+
+async def _maybe_issue_247travels_ticket(session,
+                                      fallback_pnr: str) -> tuple:
+    """Paid webhook: turn the stored Travels247 booking_token into a real PNR.
+
+    Runs only when Travels247 creds are configured AND the session carries a
+    booking_token + travellers (stored by /tools/reserve). Anything
+    missing, or any Travels247 failure -> (fallback_pnr, provisional note):
+    the booking stays PAID and the mock-PNR path is preserved.
+    """
+    provisional = " (provisional)"
+    pending_note = ("Your e-ticket is issued once the airline confirms "
+                    "availability.")
+    details = session.flight_details or {}
+    token, travellers = details.get("booking_token"), details.get("travellers")
+    if not (TRAVELS247_EMAIL and TRAVELS247_PASSWORD):
+        return fallback_pnr, pending_note, provisional
+    if not token or not travellers:
+        logger.info("Travels247 ticketing skipped for %s (no token/travellers)",
+                    session.payment_ref)
+        return fallback_pnr, pending_note, provisional
+    sky = Travels247Client()
+    try:
+        pax = details.get("passengers") or {}
+        priced = await sky.verify_price(
+            token, adults=_as_int(pax.get("adults"), 1),
+            children=_as_int(pax.get("children"), 0),
+            infants=_as_int(pax.get("infants"), 0))
+        res = await sky.reserve(
+            priced["booking_token"], travellers,
+            adults=_as_int(pax.get("adults"), 1),
+            children=_as_int(pax.get("children"), 0),
+            infants=_as_int(pax.get("infants"), 0))
+        logger.info("TRAVELS247 TICKET %s -> PNR %s",
+                    session.payment_ref, res["pnr"])
+        deadline = (f" Ticket deadline: {res['ticket_deadline']}."
+                    if res.get("ticket_deadline") else "")
+        return res["pnr"], f"E-ticket issued.{deadline}", ""
+    except Travels247Error as e:
+        logger.error("Travels247 ticketing failed for %s: %s - keeping "
+                     "provisional PNR", session.payment_ref, e)
+        return fallback_pnr, pending_note, provisional
+    finally:
+        await sky.close()
+
+
+# ---------------------------------------------------------------------------
 # Paystack webhook - the other half of the settlement loop
 # ---------------------------------------------------------------------------
 def _notify_admin(text: str) -> None:
@@ -886,16 +1378,16 @@ async def paystack_webhook(request: Request):
 
         session = outcome.get("session")
         if outcome["outcome"] == "paid":
-            pnr = outcome.get("pnr") or "FB-????"
+            pnr, ticket_note, provisional = await _maybe_issue_247travels_ticket(
+                session, outcome.get("pnr") or "FB-????")
             _notify_session_user(
                 session,
                 f"✅ BOOKING CONFIRMED - payment received!\n"
-                f"PNR: {pnr} (provisional)\n"
+                f"PNR: {pnr}{provisional}\n"
                 f"{city_name(session.origin)} -> {city_name(session.destination)} "
                 f"{session.flight_date}\n"
                 f"Paid: ₦{session.total_price:,.0f}\n"
-                f"Your e-ticket is issued once the airline confirms "
-                f"availability. Safe travels!")
+                f"{ticket_note} Safe travels!")
         elif outcome["outcome"] == "refund_required":
             _notify_session_user(
                 session,
