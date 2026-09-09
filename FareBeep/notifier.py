@@ -77,8 +77,15 @@ class MetaWhatsapp:
         return self._send(to, {"type": "text",
                                "text": {"body": body}}, "text")
 
-    def send_interactive_card(self, to: str, body: str,
-                                buttons: list,
+    def send_typing_indicator(self, to: str) -> bool:
+        """Show 'typing...' on the user's WhatsApp (up to ~25s or until
+        our reply lands). Best-effort: never raises, never blocks the
+        background reply task."""
+        return self._send(to, {"type": "typing_indicator",
+                               "typing_indicator": {"type": "text"}},
+                          "typing_indicator")
+
+    def send_interactive_card(self, to: str, body: str,                                buttons: list,
                                 image_url: str = None,
                                 footer: str = None) -> bool:
         """Flight card: optional airline-logo image header, price body,

@@ -155,6 +155,10 @@ async def meta_webhook(request: Request, background: BackgroundTasks):
 
     # Ack Meta immediately (20s deadline); handle the message off-thread.
     if text and phone:
+        # Typing bubble first (best-effort): the chat feels alive while
+        # the brain works. MetaWhatsapp directly - never the global
+        # notifier, which may point at another channel.
+        MetaWhatsapp().send_typing_indicator(phone)
         background.add_task(_handle_incoming_message, phone, text)
     return Response(content="200 OK", media_type="text/plain")
 

@@ -157,3 +157,46 @@ def test_payment_status_page(client):
     assert r.status_code == 200
     assert "Payment received" in r.text
     assert "FB-ABC123" in r.text
+
+
+def test_meta_typing_indicator_payload():
+    """Typing bubble shape per Meta Cloud API (no message id needed)."""
+    from FareBeep.notifier import MetaWhatsapp
+
+    class FakeHTTP:
+        def post(self, url, headers=None, json=None):
+            self.payload = json
+            return FakeResp()
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {}
+
+    http = FakeHTTP()
+    wa = MetaWhatsapp(access_token="tok", phone_number_id="123",
+                      http_client=http)
+    assert wa.send_typing_indicator("+2348012345678") is True
+    assert http.payload["type"] == "typing_indicator"
+    assert http.payload["typing_indicator"] == {"type": "text"}
+    assert http.payload["to"] == "+2348012345678"
+
+
+def test_meta_webhook_sends_typing_on_receipt(client, monkeypatch):
+    """Bubble fires synchronously in the webhook, before the reply task."""
+    typed = []
+    monkeypatch.setattr(main, "MetaWhatsapp",
+                        lambda *a, **k: type("W", (), {
+                            "send_typing_indicator": staticmethod(
+                                lambda to: typed.append(to) or True)})())
+    monkeypatch.setattr(main, "_handle_incoming_message",
+                        lambda phone, text: None)
+    body = (b'{"entry":[{"changes":[{"value":{'
+            b'"messages":[{"from":"+2348012345678",'
+            b'"text":{"body":"hello"}}]}}]}]}')
+    r = client.post("/webhook/meta", content=body,
+                    headers={"X-Hub-Signature-256": _meta_sig(body)})
+    assert r.status_code == 200
+    assert typed == ["+2348012345678"]
