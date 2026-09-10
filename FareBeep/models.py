@@ -79,6 +79,7 @@ class Subscription(Base):
     target_date = Column(DateTime(timezone=True), nullable=True)  # NULL = rolling window
     last_price = Column(Float, nullable=True)          # last observed fare (baseline)
     last_alerted_price = Column(Float, nullable=True)  # dedupe: never re-alert same price
+    paused = Column(Boolean, default=False)            # user-paused: cycle skips, row kept
     created_at = Column(DateTime(timezone=True), default=utcnow)
 
     user = relationship("User", back_populates="subscriptions")

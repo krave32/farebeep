@@ -243,6 +243,7 @@ def _apply_additive_migrations() -> None:
     additive = [
         ("chat_state", "pending_requote", "JSON"),
         ("chat_state", "agent_history", "JSON"),
+        ("subscriptions", "paused", "BOOLEAN DEFAULT FALSE"),
     ]
     engine = get_engine()
     with engine.begin() as conn:

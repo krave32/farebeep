@@ -32,6 +32,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from FareBeep import chatstate
+from FareBeep.alerts import (WatchAmbiguous, format_watch, list_watches,
+                             match_watch)
 from FareBeep.config import GROQ_API_KEY, GROQ_MODEL
 from FareBeep.iata import resolve_iata
 from FareBeep.models import User, utcnow
@@ -81,9 +83,16 @@ WHAT YOU CAN DO
 2. Lock a fare for 10 minutes and take payment via Paystack
    (reserve_fare -> payment link).
 3. Watch a route for price drops, free (subscribe_alerts -> beep).
+4. Manage existing watches: list, pause, resume, cancel, edit the
+   target, or clear it to drop-watch (manage_alerts).
 That's it. You cannot do round trips, international flights, or
 flight status. If asked, say so plainly in one line and offer what
 you CAN do.
+
+STOP (never handle it yourself)
+If the user wants to stop/unsubscribe/erase everything ("stop",
+"delete my data", "no more alerts"), do NOT act - reply exactly:
+"To stop everything, just reply STOP." The system handles it.
 
 AIRPORTS YOU COVER (IATA in brackets)
 Lagos LOS (Eko), Abuja ABV (Abj), Port Harcourt PHC (PH), Kano KAN,
@@ -137,6 +146,15 @@ briefly with the summary it returns.
   target is far below known fares and may never come. Offer drop-watch
   instead (call again with no target if they agree) - never shame them
   for the number.
+
+TOOL 4: manage_alerts
+Call it when the user talks about EXISTING watches ("my beeps",
+"pause lagos", "cancel 2", "change it to 70k", "stop watching").
+Prefer acting over asking: list first when unsure which watch they
+mean (the result tells you), then act in a follow-up turn. Read out
+summaries and any realism_warning the same way as TOOL 3.
+Never pause/cancel on negated phrasing ("don't cancel", "do not
+stop") - confirm the watches stay instead.
 
 TRAVELLER DETAILS (for the ticket)
 Collect the passenger's full name before reserving (one question at a
@@ -236,6 +254,19 @@ class _SubscribeArgs(BaseModel):
         default="",
         description=("Travel date as YYYY-MM-DD. Omit for a rolling "
                      "window watch."))
+
+
+class _ManageArgs(BaseModel):
+    action: str = Field(
+        description=("'list', 'pause', 'resume', 'cancel', 'edit' or "
+                     "'dropwatch' (dropwatch clears the target)."))
+    number: Optional[int] = Field(
+        default=None,
+        description="Watch number from the list (1-based).")
+    origin: str = Field(default="", description="Origin city or IATA")
+    destination: str = Field(default="", description="Destination city or IATA")
+    target_price: Optional[float] = Field(
+        default=None, description="New NGN target (edit only).")
 
 
 class _ReserveArgs(BaseModel):
@@ -420,6 +451,92 @@ def build_tools(db: Session, phone: str) -> list:
             "summary": summary,
             "realism_warning": target_realism_note(db, o, d, tp)})
 
+    def manage_alerts(action: str, number: int = None,
+                      origin: str = "", destination: str = "",
+                      target_price: float = None) -> str:
+        from FareBeep.alerts import SubscriptionMonitor, target_realism_note
+        user = db.query(User).filter(User.phone == phone).first()
+        if user is None:
+            return json.dumps({"ok": False,
+                               "error": "unknown user - say hello first"})
+        subs = list_watches(db, user.user_id)
+        act = (action or "").strip().lower()
+        if act == "list" or not subs:
+            watches = [{
+                "n": i,
+                "route": f"{s.origin}->{s.destination}",
+                "target_price": s.target_price,
+                "paused": bool(getattr(s, "paused", False)),
+                "summary": format_watch(s, i),
+            } for i, s in enumerate(subs, start=1)]
+            return json.dumps({
+                "ok": True, "watches": watches,
+                "summary": ("No price watches yet." if not watches else
+                            "Watches: " + "; ".join(
+                                w["summary"] for w in watches))})
+        if act not in {"pause", "resume", "cancel", "edit", "dropwatch"}:
+            return json.dumps({"ok": False,
+                               "error": "unknown action - use list, pause, "
+                                        "resume, cancel, edit or dropwatch"})
+        rest = " ".join(x for x in
+                        [str(number or ""), origin or "",
+                         destination or ""] if x).strip()
+        try:
+            sub, n = match_watch(
+                subs, rest or f"{subs[0].origin} {subs[0].destination}"
+                if len(subs) == 1 else rest)
+        except WatchAmbiguous:
+            return json.dumps({
+                "ok": False, "error": "ambiguous",
+                "summary": ("Several watches match - ask which one by "
+                            "number: " + "; ".join(
+                                format_watch(s, i)
+                                for i, s in enumerate(subs, start=1)))})
+        if sub is None:
+            return json.dumps({
+                "ok": False, "error": "not found",
+                "summary": "I couldn't find that watch - list them first."})
+        if act == "pause":
+            sub.paused = True
+            db.commit()
+            return json.dumps({"ok": True,
+                               "summary": f"Paused {format_watch(sub, n)}."})
+        if act == "resume":
+            sub.paused = False
+            db.commit()
+            return json.dumps({"ok": True,
+                               "summary": f"Resumed {format_watch(sub, n)}."})
+        if act == "cancel":
+            route = f"{sub.origin}->{sub.destination}"
+            db.delete(sub)
+            db.commit()
+            return json.dumps({"ok": True,
+                               "summary": f"Cancelled {route} - deleted."})
+        # edit / dropwatch
+        tp = None
+        if act == "edit":
+            if target_price is None:
+                return json.dumps({
+                    "ok": False, "error": "need target",
+                    "summary": "What should the new target be? "
+                               "Name a naira amount."})
+            try:
+                tp = float(target_price)
+            except (ValueError, TypeError):
+                return json.dumps({"ok": False, "error": "bad target"})
+        SubscriptionMonitor(db).subscribe(
+            user.user_id, sub.origin, sub.destination,
+            target_price=tp, target_date=sub.target_date)
+        note = target_realism_note(db, sub.origin, sub.destination, tp)
+        if tp is None:
+            summary = (f"Updated {format_watch(sub, n)}: watching any "
+                       f"genuine drop.")
+        else:
+            summary = (f"Updated {format_watch(sub, n)}: beeping at "
+                       f"NGN {tp:,.0f} or lower.")
+        return json.dumps({"ok": True, "summary": summary,
+                           "realism_warning": note})
+
     return [
         StructuredTool.from_function(
             func=search_fares, name="search_fares",
@@ -441,6 +558,14 @@ def build_tools(db: Session, phone: str) -> list:
                          "If the result carries realism_warning, read it "
                          "out plainly."),
             args_schema=_SubscribeArgs),
+        StructuredTool.from_function(
+            func=manage_alerts, name="manage_alerts",
+            description=("List, pause, resume, cancel, edit or dropwatch "
+                         "the user's price watches. Call for 'my beeps', "
+                         "'pause/resume/cancel ...', 'change target ...'. "
+                         "List first when unsure which watch they mean, "
+                         "then act. Read out summaries."),
+            args_schema=_ManageArgs),
     ]
 
 

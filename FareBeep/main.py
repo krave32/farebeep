@@ -185,6 +185,216 @@ RESTING_NOTE = ("Our smart brain is resting right now, so I'm running on "
                 "tomorrow'.\n\n")
 
 
+_MANAGE_LIST = frozenset({
+    "beeps", "my beeps", "my alerts", "alerts", "watches", "my watches",
+    "show beeps", "show alerts", "list beeps", "list alerts",
+})
+_MANAGE_VERBS = ("PAUSE", "RESUME", "CANCEL", "EDIT")
+
+
+def _list_beeps(db, user: User) -> None:
+    """Numbered beep list (numbers match PAUSE/RESUME/CANCEL/EDIT)."""
+    from FareBeep.alerts import format_watch, list_watches
+    subs = list_watches(db, user.user_id)
+    if not subs:
+        _say(user.phone,
+             "You have no price beeps yet. Send a route like 'Lagos to "
+             "Abuja tomorrow' and I'll watch it - or TRACK it with a "
+             "target price.",
+             user.name)
+        return
+    lines = "\n".join(format_watch(s, i) for i, s in enumerate(subs, start=1))
+    _say(user.phone,
+         f"🔔 Your beeps ({len(subs)}):\n{lines}\n\n"
+         f"Reply PAUSE n, RESUME n, CANCEL n, or EDIT n 70000.",
+         user.name)
+
+
+def _parse_edit_price(rest: str):
+    """Last number in the text is the new target ('70k', '70,000');
+    the word DROP (and nothing numeric) clears it to drop-watch."""
+    import re
+    if re.search(r"\bdrop\b", rest or "", re.IGNORECASE):
+        return "drop"
+    nums = re.findall(r"(\d[\d,]*)\s*(k)?\b", rest or "", re.IGNORECASE)
+    if not nums:
+        return None
+    digits, kilo = nums[-1]
+    try:
+        value = int(digits.replace(",", ""))
+    except ValueError:
+        return None
+    return float(value * 1000 if kilo else value)
+
+
+def _handle_manage(db, user: User, text: str) -> bool:
+    """Deterministic beep management. True = turn handled (agent and
+    brain must not run). Bare PAUSE/RESUME apply to a lone watch;
+    bare CANCEL/EDIT always ask first (destructive/ambiguous)."""
+    norm = (text or "").strip()
+    flat = norm.lower().rstrip("?!.")
+    upper = norm.upper().rstrip("?!.")
+    if flat in _MANAGE_LIST:
+        _list_beeps(db, user)
+        return True
+    verb = None
+    for v in _MANAGE_VERBS:
+        if upper == v or upper.startswith(v + " "):
+            verb = v
+            break
+    if verb is None:
+        return False
+    rest = norm[len(verb):].strip()
+    from FareBeep.alerts import (WatchAmbiguous, format_watch, list_watches,
+                                 match_watch)
+    subs = list_watches(db, user.user_id)
+    if not subs:
+        _say(user.phone,
+             "You have no price beeps to change. Send a route like "
+             "'Lagos to Abuja tomorrow' and I'll watch it.",
+             user.name)
+        return True
+    if not rest:
+        if verb in ("PAUSE", "RESUME") and len(subs) == 1:
+            sub, n = subs[0], 1
+        else:
+            _list_beeps(db, user)
+            return True
+    else:
+        try:
+            found = match_watch(subs, rest)
+        except WatchAmbiguous:
+            _say(user.phone,
+                 "Which one did you mean?\n" +
+                 "\n".join(format_watch(s, i)
+                            for i, s in enumerate(subs, start=1)) +
+                 f"\n\nReply {verb} with its number.",
+                 user.name)
+            return True
+        sub, n = found
+        if sub is None:
+            if verb == "EDIT" and len(subs) == 1:
+                sub, n = subs[0], 1
+            else:
+                _say(user.phone,
+                     "I couldn't find that watch. " +
+                     "\n".join(format_watch(s, i)
+                                for i, s in enumerate(subs, start=1)) +
+                     f"\n\nReply {verb} with its number.",
+                     user.name)
+                return True
+    if verb == "PAUSE":
+        sub.paused = True
+        db.commit()
+        _say(user.phone,
+             f"⏸ Paused {format_watch(sub, n)} - settings kept, silent "
+             f"until you RESUME it.",
+             user.name)
+    elif verb == "RESUME":
+        sub.paused = False
+        db.commit()
+        _say(user.phone, f"▶ Resumed {format_watch(sub, n)}.", user.name)
+    elif verb == "CANCEL":
+        db.delete(sub)
+        db.commit()
+        _say(user.phone,
+             f"❌ Cancelled {city_name(sub.origin)} -> "
+             f"{city_name(sub.destination)} - watch deleted.",
+             user.name)
+    elif verb == "EDIT":
+        price = _parse_edit_price(rest)
+        if price is None:
+            _say(user.phone,
+                 f"To change {format_watch(sub, n)}, reply like: EDIT {n} "
+                 f"70000 - or EDIT {n} DROP to watch any genuine drop.",
+                 user.name)
+            return True
+        from FareBeep.alerts import SubscriptionMonitor
+        new_target = None if price == "drop" else price
+        SubscriptionMonitor(db).subscribe(
+            user.user_id, sub.origin, sub.destination,
+            target_price=new_target, target_date=sub.target_date)
+        if new_target is None:
+            _say(user.phone,
+                 f"✏️ Updated {format_watch(sub, n)}: now watching any "
+                 f"genuine drop.",
+                 user.name)
+        else:
+            _say(user.phone,
+                 f"✏️ Updated {format_watch(sub, n)}: now beeping at "
+                 f"₦{new_target:,.0f} or lower.",
+                 user.name)
+    return True
+
+
+# Whole-message stop requests: handled deterministically BEFORE the agent
+# (the model must never improvise deletions - NDPA data promise).
+_STOP_PHRASES = frozenset({
+    "stop", "unsubscribe", "stop all", "stop alerts", "cancel all alerts",
+    "cancel my alerts", "remove all alerts", "delete my data",
+    "delete everything", "opt out", "optout", "stop beeps",
+})
+
+# Phrases that stop everything even buried in a sentence ("please stop
+# messaging me"). Each REQUIRES an object word - a bare "stop" inside
+# other words ("stopover in Abuja", "nonstop flight") must never match.
+_STOP_CONTAINS = (
+    r"\bstop\s+(all\s+)?(alerts|beeps|messages|messaging|notifications)\b",
+    r"\bunsubscribe\b",
+    r"\bcancel\s+(all\s+|my\s+)?(alerts|beeps)\b",
+    r"\bdelete\s+(my|all|everything)\b",
+    r"\bopt\s?out\b",
+)
+
+
+def _is_stop_request(text: str) -> bool:
+    """Stop/unsubscribe/erase request: whole message, or a stop-phrase
+    with an explicit object (punctuation tolerated). Negated phrasing
+    ("don't cancel my alerts") is NEVER a stop - it falls through to
+    the agent/brain for nuanced handling."""
+    import re
+    flat = (text or "").strip().lower().rstrip("!.").strip()
+    if flat in _STOP_PHRASES:
+        return True
+    if _looks_negated(flat):
+        return False
+    return any(re.search(pat, flat) for pat in _STOP_CONTAINS)
+
+
+def _looks_negated(text: str) -> bool:
+    """Hedged/negated phrasing that must never trigger deletion."""
+    import re
+    return bool(re.search(r"\b(don'?t|do not|never mind|not really)\b",
+                          text or ""))
+
+
+def _handle_stop(db, user: User) -> None:
+    """Delete every subscription AND all chat-scoped state, then confirm.
+    Money records (booking_sessions) are untouched - refunds stay provable."""
+    from FareBeep.alerts import SubscriptionMonitor
+    removed = SubscriptionMonitor(db).unsubscribe(user.user_id)
+    chatstate.clear_pending_fare(db, user.phone)
+    chatstate.clear_pending_requote(db, user.phone)
+    chatstate.clear_last_fare(db, user.phone)
+    chatstate.clear_last_fares(db, user.phone)
+    chatstate.clear_agent_history(db, user.phone)
+    if removed:
+        _say(user.phone,
+             f"🔕 Stopped - all {removed} price alert(s) removed and your "
+             f"chat data deleted.",
+             user.name)
+    else:
+        _say(user.phone,
+             "You have no active price alerts - nothing to stop. "
+             "Your chat data is cleared anyway.",
+             user.name)
+
+
+# Watch helpers (list/match/format) live in alerts.py next to the
+# Subscription model logic - imported lazily like the rest of main's
+# alerts usage. _tap_alert keeps its own index+context resolution.
+
+
 def _handle_incoming_message(phone: str, text: str) -> None:
     """PASS 2 - CONCIERGE LOGIC: intent -> ask / search / act -> reply."""
     db = SessionLocal()
@@ -251,7 +461,18 @@ def _handle_incoming_message(phone: str, text: str) -> None:
             # (quota, outage, timeout) we fall through to the
             # deterministic brain below instead of going silent - the
             # user always gets an answer.
+            #
+            # Just before it: STOP / MANAGE whole-message commands own
+            # their turns (the agent must never improvise deletions or
+            # beep edits - a wrong guess here deletes real user data).
+            # They sit AFTER pick/requote/pending so a financial answer
+            # ("cancel" to a price question) always wins over commands.
             guided = GUIDED_MODE
+            if _is_stop_request(text):
+                _handle_stop(db, user)
+                return
+            if _handle_manage(db, user, text):
+                return
             if GROQ_API_KEY and not guided:
                 from FareBeep import agent as fare_agent
                 try:
@@ -307,7 +528,15 @@ def _handle_incoming_message(phone: str, text: str) -> None:
             elif intent.intent == "subscribe":
                 _reply_subscribe(db, user, intent)
             elif intent.intent == "unsubscribe":
-                _reply_unsubscribe(db, user)
+                if _looks_negated(text):
+                    # "don't cancel my alerts" parsed as unsubscribe: the
+                    # user is reassuring, not erasing. Confirm, delete nothing.
+                    _say(user.phone,
+                         "Understood - your price alerts stay exactly as "
+                         "they are. Anything else I can do?",
+                         user.name)
+                else:
+                    _reply_unsubscribe(db, user)
             elif intent.intent in ("status", "track"):
                 _reply_status_ack(user, intent)
             else:

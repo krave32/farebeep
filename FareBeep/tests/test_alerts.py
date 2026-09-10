@@ -355,6 +355,26 @@ def test_broken_route_holds_but_cycle_continues(db, user):
     assert "PHC" in m.notifier.sent[0][1] or "Port Harcourt" in m.notifier.sent[0][1]
 
 
+def test_paused_subscription_gets_no_beeps_until_resumed(db, user):
+    """Paused watches are invisible to the cycle; resuming re-arms."""
+    board = FareBoard({f"LOS-ABV-{PROBE_DATE}": 90000.0})
+    m = make_monitor(db, board)
+    m.subscribe(user.user_id, "LOS", "ABV")
+    assert m.run_cycle() == 0       # baseline 90,000
+
+    sub = db.query(Subscription).one()
+    sub.paused = True
+    db.commit()
+    board.prices[f"LOS-ABV-{PROBE_DATE}"] = 70000.0   # -22%: would beep
+    assert m.run_cycle() == 0
+    assert m.notifier.sent == []
+
+    sub.paused = False
+    db.commit()
+    assert m.run_cycle() == 1       # resumed: beeps immediately
+    assert "70,000" in m.notifier.sent[0][1]
+
+
 # ---------------------------------------------------------------------------
 # fairytale-target guard - warn, never block
 # ---------------------------------------------------------------------------

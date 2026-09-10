@@ -78,6 +78,73 @@ def target_realism_note(db, origin: str, destination: str,
             f"genuine drop instead.")
 
 
+class WatchAmbiguous(Exception):
+    """Route words matched several watches - ask, don't guess."""
+
+
+def list_watches(db, user_id) -> list:
+    """A user's subscriptions, oldest first (list numbers are 1-based)."""
+    return (db.query(Subscription)
+            .filter(Subscription.user_id == user_id)
+            .order_by(Subscription.id.asc()).all())
+
+
+def format_watch(sub, n: int) -> str:
+    """One numbered beep line for listings and confirmations."""
+    from FareBeep.iata import city_name
+    route = f"{city_name(sub.origin)} -> {city_name(sub.destination)}"
+    target = (f"below \u20a6{sub.target_price:,.0f}"
+              if sub.target_price is not None else "any drop")
+    when = sub.target_date
+    try:
+        when = when.strftime("%d %b") if when is not None else "rolling"
+    except Exception:
+        when = str(when) if when else "rolling"
+    state = " [paused]" if getattr(sub, "paused", False) else ""
+    return f"{n}. {route}, {target}, {when}{state}"
+
+
+def match_watch(subs: list, rest: str):
+    """Resolve 'n' or route words to one watch.
+
+    Number wins. Otherwise an exact route pair in typed order wins
+    ("pause lagos abuja" = LOS->ABV even when the reverse exists);
+    one city naming exactly one watch wins. Several matches raise
+    WatchAmbiguous; nothing matching returns (None, None).
+    """
+    import re
+    from FareBeep.iata import resolve_iata
+    m = re.search(r"\d+", rest or "")
+    if m:
+        n = int(m.group(0))
+        if 1 <= n <= len(subs):
+            return subs[n - 1], n
+        return None, None
+    codes = []
+    for word in re.findall(r"[A-Za-z]{3,}", rest or ""):
+        code = resolve_iata(word)
+        if code and code not in codes:
+            codes.append(code)
+    if not codes:
+        return None, None
+    if len(codes) >= 2:
+        o, d = codes[0], codes[1]
+        for i, s in enumerate(subs, start=1):
+            if (s.origin, s.destination) == (o, d):
+                return s, i
+        for i, s in enumerate(subs, start=1):
+            if (s.origin, s.destination) == (d, o):
+                return s, i
+        return None, None
+    hits = [(i, s) for i, s in enumerate(subs, start=1)
+            if codes[0] in (s.origin, s.destination)]
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        raise WatchAmbiguous()
+    return None, None
+
+
 class SubscriptionMonitor:
     """Owns subscription lifecycle + the fare-drop detection cycle."""
 
@@ -140,6 +207,7 @@ class SubscriptionMonitor:
         # a changed target re-arms the alert (fresh dedupe baseline)
         sub.last_price = None
         sub.last_alerted_price = None
+        sub.paused = False  # re-subscribing resumes a paused watch
         self.db.commit()
         self.db.refresh(sub)
         logger.info("Subscription set: %s->%s target=%s date=%s (user %s)",
@@ -167,7 +235,8 @@ class SubscriptionMonitor:
 
         Returns the number of Beep messages sent this cycle.
         """
-        subs = self.db.query(Subscription).all()
+        subs = self.db.query(Subscription).filter(
+            Subscription.paused.isnot(True)).all()
         beeps = 0
         for sub in subs:
             try:

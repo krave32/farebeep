@@ -880,3 +880,143 @@ def test_guided_mode_skips_agent_entirely(client, monkeypatch):
 
     assert fake.sent
     assert "Lagos" in fake.sent[-1][1]
+
+
+# ---------------------------------------------------------------------------
+# S2 - beep management commands (deterministic, no agent needed)
+# ---------------------------------------------------------------------------
+def _seed_subs(db=None):
+    """Two watches for the test chat: LOS->ABV @80k, LOS->PHC drop-watch."""
+    from FareBeep.models import Subscription, User
+    db = db or main.SessionLocal()
+    try:
+        user = db.query(User).filter_by(phone="987654321").first()
+        if user is None:
+            user = User(phone="987654321")
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        db.add(Subscription(user_id=user.user_id, origin="LOS",
+                            destination="ABV", target_price=80000.0))
+        db.add(Subscription(user_id=user.user_id, origin="LOS",
+                            destination="PHC"))
+        db.commit()
+        return user.user_id
+    finally:
+        db.close()
+
+
+def _subs():
+    from FareBeep.models import Subscription
+    db = main.SessionLocal()
+    try:
+        return db.query(Subscription).order_by(Subscription.id).all()
+    finally:
+        db.close()
+
+
+def test_beeps_lists_numbered_watches(client, monkeypatch):
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)
+    test_client, fake, ledger = client
+    _seed_subs()
+
+    _post(test_client, "MY BEEPS")
+
+    body = fake.sent[-1][1]
+    assert "1." in body and "2." in body
+    assert "80,000" in body
+    assert "PAUSE" in body
+
+
+def test_pause_resume_by_number(client, monkeypatch):
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)
+    test_client, fake, ledger = client
+    _seed_subs()
+
+    _post(test_client, "PAUSE 1")
+    assert _subs()[0].paused is True
+    assert "Paused" in fake.sent[-1][1]
+
+    _post(test_client, "RESUME 1")
+    assert _subs()[0].paused is False
+    assert "Resumed" in fake.sent[-1][1]
+
+
+def test_pause_by_route_and_ambiguous_city(client, monkeypatch):
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)
+    test_client, fake, ledger = client
+    _seed_subs()
+
+    _post(test_client, "PAUSE LOS ABV")
+    paused = [s.paused for s in _subs()]
+    assert paused == [True, False]
+
+    _post(test_client, "RESUME LOS ABV")
+    _post(test_client, "PAUSE Lagos")  # names BOTH watches: must ask
+    assert "Which one" in fake.sent[-1][1]
+    assert all(s.paused is not True for s in _subs())
+
+
+def test_cancel_deletes_one_and_edit_changes_target(client, monkeypatch):
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)
+    test_client, fake, ledger = client
+    _seed_subs()
+
+    _post(test_client, "CANCEL 2")
+    remaining = _subs()
+    assert len(remaining) == 1 and remaining[0].destination == "ABV"
+    assert "Cancelled" in fake.sent[-1][1]
+
+    _post(test_client, "EDIT 1 70000")
+    assert _subs()[0].target_price == 70000.0
+    assert "70,000" in fake.sent[-1][1]
+
+    _post(test_client, "EDIT 1 DROP")
+    assert _subs()[0].target_price is None
+
+
+def test_bare_cancel_asks_never_deletes(client, monkeypatch):
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)
+    test_client, fake, ledger = client
+    _seed_subs()
+
+    _post(test_client, "CANCEL")
+    assert len(_subs()) == 2
+    assert "1." in fake.sent[-1][1]
+
+
+def test_stop_wipes_subs_and_memory(client, monkeypatch):
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)
+    test_client, fake, ledger = client
+    _seed_subs()
+    db = main.SessionLocal()
+    try:
+        chatstate.append_agent_history(db, "987654321", "old", "old")
+    finally:
+        db.close()
+
+    _post(test_client, "STOP")
+
+    assert _subs() == []
+    db = main.SessionLocal()
+    try:
+        assert chatstate.get_agent_history(db, "987654321") == []
+    finally:
+        db.close()
+    assert "🔕" in fake.sent[-1][1]
+
+
+def test_stop_phrases_and_negation_guard(client, monkeypatch):
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)
+    test_client, fake, ledger = client
+    _seed_subs()
+
+    _post(test_client, "please stop messaging me")
+    assert _subs() == []
+
+    _seed_subs()
+    _post(test_client, "don't cancel my alerts")
+    assert len(_subs()) == 2  # negation: hands off, no wipe
+
+    _post(test_client, "stopover in Abuja")
+    assert len(_subs()) == 2  # layover word, not a command

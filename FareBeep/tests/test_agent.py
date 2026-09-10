@@ -455,3 +455,74 @@ def test_subscribe_tool_needs_user_and_route(db, user, monkeypatch):
     out = json.loads(tools["subscribe_alerts"].invoke(
         {"origin": "LOS", "destination": ""}))
     assert out["subscribed"] is False
+
+
+def _seed_watch(db, user, origin="LOS", destination="ABV", target=80000.0):
+    db.add(Subscription(user_id=user.user_id, origin=origin,
+                        destination=destination, target_price=target))
+    db.commit()
+
+
+def test_manage_tool_lists_pause_resume_cancel(db, user, monkeypatch):
+    _seed_watch(db, user)
+    tools = {t.name: t for t in build_tools(db, user.phone)}
+
+    import json
+    out = json.loads(tools["manage_alerts"].invoke({"action": "list"}))
+    assert len(out["watches"]) == 1
+    assert out["watches"][0]["route"] == "LOS->ABV"
+
+    out = json.loads(tools["manage_alerts"].invoke(
+        {"action": "pause", "number": 1}))
+    assert "Paused" in out["summary"]
+    assert db.query(Subscription).one().paused is True
+
+    out = json.loads(tools["manage_alerts"].invoke(
+        {"action": "resume", "origin": "Lagos", "destination": "Abuja"}))
+    assert "Resumed" in out["summary"]
+    assert db.query(Subscription).one().paused is False
+
+    out = json.loads(tools["manage_alerts"].invoke(
+        {"action": "cancel", "number": 1}))
+    assert "Cancelled" in out["summary"]
+    assert db.query(Subscription).count() == 0
+
+
+def test_manage_tool_edit_and_dropwatch(db, user, monkeypatch):
+    _seed_watch(db, user)
+    tools = {t.name: t for t in build_tools(db, user.phone)}
+
+    import json
+    out = json.loads(tools["manage_alerts"].invoke(
+        {"action": "edit", "number": 1, "target_price": 70000.0}))
+    assert "70,000" in out["summary"]
+    assert db.query(Subscription).one().target_price == 70000.0
+
+    out = json.loads(tools["manage_alerts"].invoke(
+        {"action": "dropwatch", "number": 1}))
+    assert "genuine drop" in out["summary"]
+    assert db.query(Subscription).one().target_price is None
+
+
+def test_manage_tool_ambiguous_and_unknown(db, user, monkeypatch):
+    _seed_watch(db, user)
+    _seed_watch(db, user, destination="PHC", target=None)
+    tools = {t.name: t for t in build_tools(db, user.phone)}
+
+    import json
+    out = json.loads(tools["manage_alerts"].invoke(
+        {"action": "pause", "origin": "Lagos"}))
+    assert out["ok"] is False  # names both watches: ask, don't guess
+    assert db.query(Subscription).filter_by(paused=True).count() == 0
+
+    out = json.loads(tools["manage_alerts"].invoke({"action": "explode"}))
+    assert out["ok"] is False
+
+
+def test_agent_turn_pauses_watch(db, user, monkeypatch):
+    _seed_watch(db, user)
+    llm = FakeLLM([("manage_alerts", {"action": "pause", "number": 1}),
+                   "Paused your Lagos watch."])
+    reply = agent_reply(db, user, "pause my lagos alert", llm=llm)
+    assert "Paused your Lagos" in reply
+    assert db.query(Subscription).one().paused is True

@@ -49,6 +49,7 @@ create table if not exists subscriptions (
     target_date   date,                   -- NULL = rolling window
     last_price          numeric,          -- last observed fare (baseline)
     last_alerted_price  numeric,          -- dedupe: never re-alert same price
+    paused              boolean not null default false,  -- user-paused: cycle skips
     created_at    timestamptz not null default now()
 );
 
