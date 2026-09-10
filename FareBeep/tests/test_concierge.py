@@ -823,3 +823,60 @@ def test_route_after_greeting_searches_fresh(client, monkeypatch):
     _post(test_client, "Lagos to Abuja tomorrow")
     origins = [c[0] for c in ledger["inst"].calls]
     assert "LOS" in origins  # searched live, not answered from memory
+
+
+# ---------------------------------------------------------------------------
+# S1 - outage voice: agent down still gets an honest, useful answer
+# ---------------------------------------------------------------------------
+def _kill_agent(monkeypatch):
+    """Groq configured but exploding (quota/outage): every turn raises."""
+    monkeypatch.setattr(main, "GROQ_API_KEY", "test-key")
+    def _boom(db, user, text):
+        raise RuntimeError("429 quota exhausted")
+    monkeypatch.setattr("FareBeep.agent.agent_reply", _boom)
+
+
+def test_agent_outage_still_answers_fare(client, monkeypatch):
+    """Forced 429 on a clear route: deterministic brain answers from the
+    ledger path - user gets a fare, never silence."""
+    _kill_agent(monkeypatch)
+    test_client, fake, ledger = client
+    ledger["inst"] = RecordingLedger(None)
+
+    r = _post(test_client, "Lagos to Abuja tomorrow")
+
+    assert r.status_code == 200
+    assert fake.sent, "user got silence - the outage bug is back"
+    body = fake.sent[-1][1]
+    assert "Lagos" in body and "Abuja" in body
+
+
+def test_agent_outage_gibberish_gets_resting_note(client, monkeypatch):
+    """Forced 429 on nonsense: honest resting note + help, never silence
+    or a hallucinated fare."""
+    _kill_agent(monkeypatch)
+    test_client, fake, ledger = client
+
+    _post(test_client, "blorple wibble zzz")
+
+    assert fake.sent
+    body = fake.sent[-1][1]
+    assert "resting" in body
+    assert "Lagos to Abuja" in body
+
+
+def test_guided_mode_skips_agent_entirely(client, monkeypatch):
+    """GUIDED_MODE=1: the agent is never touched (quota conservation) -
+    the deterministic brain handles the turn."""
+    monkeypatch.setattr(main, "GUIDED_MODE", True)
+    monkeypatch.setattr(main, "GROQ_API_KEY", "test-key")
+    def _must_not_run(db, user, text):
+        raise AssertionError("agent must not run in guided mode")
+    monkeypatch.setattr("FareBeep.agent.agent_reply", _must_not_run)
+    test_client, fake, ledger = client
+    ledger["inst"] = RecordingLedger(None)
+
+    _post(test_client, "Lagos to Abuja tomorrow")
+
+    assert fake.sent
+    assert "Lagos" in fake.sent[-1][1]

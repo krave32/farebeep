@@ -130,6 +130,10 @@ ELEVENLABS_TOOL_SECRET = _get("ELEVENLABS_TOOL_SECRET")
 # Unset GROQ_API_KEY = the agent stays off and the Gemini brain answers.
 GROQ_API_KEY = _get("GROQ_API_KEY")
 GROQ_MODEL = _get("GROQ_MODEL", "openai/gpt-oss-120b")
+# GUIDED_MODE=1 forces the deterministic brain (no Groq calls at all):
+# quota conservation, outage survival, or simply cheaper operation.
+# The agent is skipped and parse_intent runs fully offline.
+GUIDED_MODE = _get("GUIDED_MODE", "") == "1"
 
 # --- Primary inventory: 247Travels Travels247 (Xown Solutions) ---
 # Search (external) -> Pricing (verify) -> Reserve (PNR). JWT login with

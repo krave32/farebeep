@@ -158,7 +158,8 @@ def _today_weekday() -> str:
 
 
 def parse_intent(text: str, api_key: str = None, model: str = None,
-                 http_client: Optional[httpx.Client] = None) -> Intent:
+                 http_client: Optional[httpx.Client] = None,
+                 force_local: bool = False) -> Intent:
     """TWO-PASS BRAIN.
 
     Pass 1 (Extraction): Gemini (or the local parser when offline) converts
@@ -166,9 +167,10 @@ def parse_intent(text: str, api_key: str = None, model: str = None,
     independently null. Pass 2 (Concierge Logic) lives in main.py: incomplete
     intents get a warm follow-up question; complete ones go to the engine.
 
-    Never raises.
+    force_local=True skips Gemini entirely (quota outage / guided mode):
+    deterministic, offline, free. Never raises.
     """
-    api_key = api_key or GEMINI_API_KEY
+    api_key = None if force_local else (api_key or GEMINI_API_KEY)
     model = model or GEMINI_MODEL
 
     if not api_key:

@@ -647,6 +647,21 @@ def test_compose_unclear_pick_reply_failure_fallback():
     assert "2. Air Peace, leaves 07:10 - ₦118,500" in out
 
 
+def test_force_local_never_touches_network(monkeypatch):
+    """force_local=True with a LIVE key set: still fully offline. Proves
+    the quota-fallback path cannot burn API calls or hang on outages."""
+    monkeypatch.setattr(brain, "GEMINI_API_KEY", "live-key")
+
+    def _boom(*a, **k):
+        raise AssertionError("no network allowed")
+
+    monkeypatch.setattr(brain.httpx, "Client", _boom)
+    intent = brain.parse_intent("Lagos to Abuja tomorrow", force_local=True)
+    assert intent.intent == "fare"
+    assert intent.origin_iata == "LOS"
+    assert intent.destination_iata == "ABV"
+
+
 def test_compose_unclear_pick_reply_tailors_on_success():
     class _Resp:
         def raise_for_status(self):

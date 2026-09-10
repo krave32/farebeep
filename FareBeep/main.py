@@ -44,7 +44,7 @@ from FareBeep.config import (APP_BASE_URL, CONSENT_VERSION, MESSAGING_PROVIDER,
                              META_APP_SECRET, META_VERIFY_TOKEN,
                              REQUOTE_TOLERANCE_NGN, TRAVELS247_EMAIL,
                              TRAVELS247_PASSWORD, ELEVENLABS_TOOL_SECRET,
-                             GROQ_API_KEY)
+                             GROQ_API_KEY, GUIDED_MODE)
 from FareBeep.database import SessionLocal, init_db
 from FareBeep.iata import city_name, resolve_iata
 from FareBeep.models import BookingSession, User, utcnow
@@ -177,6 +177,14 @@ def _is_session_greeting(text: str) -> bool:
         in _SESSION_GREETINGS
 
 
+# Honesty prefix when the smart brain is down and the deterministic one
+# answers instead: one line, no jargon, then normal handling continues.
+RESTING_NOTE = ("Our smart brain is resting right now, so I'm running on "
+                "simple mode - I can still check fares and set beeps if "
+                "you send route + date plainly, e.g. 'Lagos to Abuja "
+                "tomorrow'.\n\n")
+
+
 def _handle_incoming_message(phone: str, text: str) -> None:
     """PASS 2 - CONCIERGE LOGIC: intent -> ask / search / act -> reply."""
     db = SessionLocal()
@@ -237,17 +245,25 @@ def _handle_incoming_message(phone: str, text: str) -> None:
             if _fill_pending_fare(db, user, text):
                 return
 
-            # GROQ AGENT: when configured, the LangChain agent owns the
-            # turn end-to-end (tools included) and its reply goes out
-            # verbatim. The Gemini intent tree below is the fallback when
-            # GROQ_API_KEY is unset.
-            if GROQ_API_KEY:
+            # GROQ AGENT: when configured (and not in guided mode), the
+            # LangChain agent owns the turn end-to-end (tools included)
+            # and its reply goes out verbatim. On ANY agent failure
+            # (quota, outage, timeout) we fall through to the
+            # deterministic brain below instead of going silent - the
+            # user always gets an answer.
+            guided = GUIDED_MODE
+            if GROQ_API_KEY and not guided:
                 from FareBeep import agent as fare_agent
-                _say(phone, fare_agent.agent_reply(db, user, text),
-                     user.name, humanized=True)
-                return
+                try:
+                    _say(phone, fare_agent.agent_reply(db, user, text),
+                         user.name, humanized=True)
+                    return
+                except Exception as e:
+                    logger.warning("Groq agent failed (%s) - guided "
+                                   "fallback: %s", phone, e)
+                    guided = True
 
-            intent = brain.parse_intent(text)
+            intent = brain.parse_intent(text, force_local=guided)
             logger.info("Intent=%s payload=%s phone=%s",
                         intent.intent, intent.as_dict(), phone)
 
@@ -295,7 +311,10 @@ def _handle_incoming_message(phone: str, text: str) -> None:
             elif intent.intent in ("status", "track"):
                 _reply_status_ack(user, intent)
             else:
-                _say(user.phone, _help_text(), user.name)
+                msg = _help_text()
+                if guided:
+                    msg = RESTING_NOTE + msg
+                _say(user.phone, msg, user.name)
         except Exception as e:
             # never let a single turn crash the webhook thread
             logger.error("Message handling failed (%s): %s", phone, e)
