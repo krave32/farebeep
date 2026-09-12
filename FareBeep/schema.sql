@@ -173,6 +173,7 @@ create table if not exists processed_messages (
     status       text not null default 'queued',-- queued | done | failed
     attempts     integer not null default 0,    -- background tries so far
     last_error   text,                          -- last failure (truncated)
+    payload      jsonb,                         -- inbound snapshot (recovery)
     processed_at timestamptz,
     created_at   timestamptz not null default now()
 );

@@ -246,6 +246,7 @@ def _apply_additive_migrations() -> None:
         ("subscriptions", "paused", "BOOLEAN DEFAULT FALSE"),
         ("processed_messages", "attempts", "INTEGER DEFAULT 0"),
         ("processed_messages", "last_error", "TEXT"),
+        ("processed_messages", "payload", "JSONB"),
     ]
     engine = get_engine()
     with engine.begin() as conn:

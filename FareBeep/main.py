@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import re
+import threading
 import uuid
 
 from pathlib import Path
@@ -72,11 +73,20 @@ notifier = get_notifier()
 def _startup():
     """Create the schema on first run (safe in both SQLite + Supabase modes)
     then verify the connection - prints the mission banner:
-    '✅ Connected to Supabase Shared Ledger'."""
+    '✅ Connected to Supabase Shared Ledger'. Finally, recover any inbound
+    messages orphaned by a crash-after-ack (claimed, 200 sent, never
+    processed) - normally zero, so boot stays fast."""
     from FareBeep.database import verify_connection
     from FareBeep.models import Base
     init_db(Base)
     verify_connection()
+    try:
+        recovered = recover_orphaned_inbound()
+        if recovered:
+            logger.warning("Startup recovered %d orphaned message(s)",
+                           recovered)
+    except Exception as e:
+        logger.error("Startup recovery failed (non-fatal): %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +147,102 @@ def _verify_meta_signature(raw_body: bytes, signature_header: str) -> bool:
 # ---------------------------------------------------------------------------
 
 MAX_INBOUND_ATTEMPTS = 3
+
+
+def _snapshot_message(m) -> dict:
+    """JSON-safe snapshot of a classified message, stored at claim time so
+    a crash-after-ack is recoverable: the payload carries everything
+    _dispatch_single needs (no re-fetch, no Meta redelivery required)."""
+    mtype = (m.message_type.value
+             if hasattr(m.message_type, "value") else str(m.message_type))
+    return {
+        "message_id": m.message_id or "",
+        "from_number": m.from_number or "",
+        "message_type": mtype,
+        "timestamp": m.timestamp or "",
+        "text": m.text,
+        "button_id": m.button_id,
+        "button_title": m.button_title,
+        "list_id": m.list_id,
+        "list_title": m.list_title,
+        "flow_token": m.flow_token,
+        "flow_data": m.flow_data,
+        "raw": m.raw if isinstance(m.raw, dict) else {},
+    }
+
+
+def _restore_message(snap: dict):
+    """Rebuild an InboundMessage from a stored snapshot (startup recovery)."""
+    from FareBeep.whatsapp.router import InboundMessage, MessageType
+    try:
+        mtype = MessageType((snap or {}).get("message_type", "unknown"))
+    except ValueError:
+        mtype = MessageType.UNKNOWN
+    return InboundMessage(
+        message_id=(snap or {}).get("message_id", ""),
+        from_number=(snap or {}).get("from_number", ""),
+        message_type=mtype,
+        timestamp=(snap or {}).get("timestamp", ""),
+        raw=(snap or {}).get("raw", {}) or {},
+        text=(snap or {}).get("text"),
+        button_id=(snap or {}).get("button_id"),
+        button_title=(snap or {}).get("button_title"),
+        list_id=(snap or {}).get("list_id"),
+        list_title=(snap or {}).get("list_title"),
+        flow_token=(snap or {}).get("flow_token"),
+        flow_data=(snap or {}).get("flow_data"),
+    )
+
+
+def recover_orphaned_inbound(db=None) -> int:
+    """Startup recovery: re-dispatch every row still queued. At boot no
+    worker is alive, so any queued row is an orphan of a crash-after-ack
+    (claimed, 200 sent, process died). Rebuilt from stored payloads and
+    run through the normal FIFO batch - attempts accounting continues,
+    so a poison message still dead-letters instead of looping forever.
+    Returns the count recovered. Never raises (boot must not fail)."""
+    own = db is None
+    try:
+        db = db or SessionLocal()
+        rows = (db.query(ProcessedMessage)
+                .filter(ProcessedMessage.status == "queued")
+                .order_by(ProcessedMessage.created_at).all())
+        orphaned = [r for r in rows if (r.payload or {}).get("message_id")]
+        if not orphaned:
+            return 0
+        logger.warning("Recovery: re-dispatching %d orphaned inbound "
+                       "message(s) after restart", len(orphaned))
+        _process_inbound_batch([_restore_message(r.payload)
+                                for r in orphaned])
+        return len(orphaned)
+    except Exception as e:
+        logger.error("Recovery sweep failed (orphans stay queued): %s", e)
+        return 0
+    finally:
+        if own:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
+# Per-phone batch locks: two webhook POSTs for the same customer (or a
+# startup recovery racing a live request) must never interleave turns -
+# each phone's batch runs alone. Single-process scope: it serializes the
+# threadpool BackgroundTasks on this replica. Cross-replica races need
+# DB-level serialization (Railway runs one replica by default - flag it
+# before scaling web replicas).
+_PHONE_LOCKS: dict = {}
+_PHONE_LOCKS_GUARD = threading.Lock()
+
+
+def _phone_lock(phone: str) -> threading.Lock:
+    with _PHONE_LOCKS_GUARD:
+        lock = _PHONE_LOCKS.get(phone)
+        if lock is None:
+            lock = threading.Lock()
+            _PHONE_LOCKS[phone] = lock
+        return lock
 def _classify_all_entries(payload: dict) -> list:
     """Classify every message in every entry. Legacy template quick-reply
     taps (messages[].button.payload - no 'interactive' wrapper) bypass the
@@ -209,6 +315,7 @@ def _claim_inbound_messages(messages: list) -> list:
                                   if hasattr(m.message_type, "value")
                                   else str(m.message_type)),
                     status="queued",
+                    payload=_snapshot_message(m),
                 ))
                 db.commit()
                 claimed.append(m)
@@ -249,6 +356,13 @@ def _mark_processed(message_id: str, status: str, error: str = None) -> None:
                 row.attempts = (row.attempts or 0) + 1
                 if error:
                     row.last_error = str(error)[:500]
+                if row.attempts >= MAX_INBOUND_ATTEMPTS:
+                    logger.error(
+                        "Dead-letter: wamid %s from %s failed %d times - "
+                        "retained in processed_messages, needs a human "
+                        "(last error: %s)",
+                        message_id, row.phone, row.attempts,
+                        (row.last_error or "")[:200])
             if status in ("done", "failed"):
                 row.processed_at = utcnow()
             db.commit()
@@ -326,15 +440,19 @@ def _process_inbound_batch(messages: list) -> None:
             order.append(phone)
         grouped[phone].append(m)
     for phone in order:
-        batch = sorted(grouped[phone], key=_msg_sort_key)
-        for m in batch:
-            try:
-                _dispatch_single(m)
-                _mark_processed(m.message_id, "done")
-            except Exception as e:
-                logger.error("Inbound handling failed (%s): %s",
-                             phone, e)
-                _mark_processed(m.message_id, "failed", error=str(e))
+        # One phone's turns never interleave with another batch for the
+        # same phone (concurrent webhook POSTs, recovery vs live) - the
+        # lock is per phone, so different customers still run parallel.
+        with _phone_lock(phone):
+            batch = sorted(grouped[phone], key=_msg_sort_key)
+            for m in batch:
+                try:
+                    _dispatch_single(m)
+                    _mark_processed(m.message_id, "done")
+                except Exception as e:
+                    logger.error("Inbound handling failed (%s): %s",
+                                 phone, e)
+                    _mark_processed(m.message_id, "failed", error=str(e))
 
 
 def _record_statuses(payload: dict) -> int:

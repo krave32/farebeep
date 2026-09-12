@@ -244,6 +244,9 @@ class ProcessedMessage(Base):
     status = Column(String, default="queued")       # queued | done | failed
     attempts = Column(Integer, default=0)           # background tries so far
     last_error = Column(Text, nullable=True)        # last failure, truncated
+    payload = Column(JSON, nullable=True)           # inbound snapshot for
+                                                    # crash recovery (see
+                                                    # recover_orphaned_inbound)
     processed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
 
