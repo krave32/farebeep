@@ -47,7 +47,7 @@ from FareBeep.config import (APP_BASE_URL, CONSENT_VERSION, MESSAGING_PROVIDER,
                              GROQ_API_KEY, GUIDED_MODE)
 from FareBeep.database import SessionLocal, init_db
 from FareBeep.iata import city_name, resolve_iata
-from FareBeep.models import BookingSession, User, utcnow
+from FareBeep.models import BookingSession, ProcessedMessage, User, utcnow
 from FareBeep.notifier import MetaWhatsapp, get_notifier
 from FareBeep.payments import verify_paystack_signature
 from FareBeep.search import LedgerOnlyEngine, LedgerSearch
@@ -113,6 +113,276 @@ def _verify_meta_signature(raw_body: bytes, signature_header: str) -> bool:
     return hmac.compare_digest(expected, signature_header)
 
 
+# ---------------------------------------------------------------------------
+# Meta inbound bridge - classify ALL messages, save-before-ack, FIFO per phone.
+# a. HMAC verified above (unchanged).
+# b. Every entry/change/message in the payload is classified (not just [0]).
+# c. New wamids are inserted into processed_messages BEFORE the 200 ack
+#    (ON CONFLICT DO NOTHING semantics via IntegrityError catch - portable
+#    across Supabase Postgres and SQLite). Duplicates are dropped here.
+# d. The 200 ack goes out immediately - no typing bubble, no brain, no
+#    network calls in the request thread (Meta 20s deadline).
+# e. Newly-claimed messages are processed in ONE background task, grouped
+#    by phone in timestamp (FIFO) order, through the EXISTING concierge
+#    pipeline (_handle_incoming_message / _tap_*). Booking/payment paths
+#    are untouched - this bridge only changes HOW messages reach them.
+# f. FAILED rows are reclaimable: when Meta redelivers the same wamid
+#    (its standard retry), a row stuck at failed with attempts left is
+#    re-queued instead of dup-dropped - bounded by MAX_INBOUND_ATTEMPTS.
+#    done/queued/exhausted rows stay dropped (never double-book).
+# g. Outbound status callbacks (sent/delivered/read/failed) are UPSERTed
+#    into delivery_receipts for ops visibility. Failed receipts NEVER
+#    trigger an automatic resend here - booking/payment messages must
+#    not be blind-retried.
+# ---------------------------------------------------------------------------
+
+MAX_INBOUND_ATTEMPTS = 3
+def _classify_all_entries(payload: dict) -> list:
+    """Classify every message in every entry. Legacy template quick-reply
+    taps (messages[].button.payload - no 'interactive' wrapper) bypass the
+    router, so they are re-attached here as BUTTON_REPLY (same tap ids the
+    old single-message path fed to cards.translate_tap)."""
+    from FareBeep.whatsapp.router import (InboundMessage, MessageType,
+                                          classify_message)
+    classified: list = []
+    seen_ids: set = set()
+    for entry in payload.get("entry") or []:
+        try:
+            batch = classify_message(entry)
+        except Exception as e:
+            logger.warning("classify_message failed on entry: %s", e)
+            batch = []
+        for m in batch:
+            classified.append(m)
+            if m.message_id:
+                seen_ids.add(m.message_id)
+    # Legacy sweep: template button payloads the router drops (it returns
+    # None for unknown shapes). Preserves the old BOOK/pick/alert/beep tap
+    # behaviour for those messages.
+    for entry in payload.get("entry") or []:
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            for msg in value.get("messages", []):
+                if not isinstance(msg, dict):
+                    continue
+                mid = msg.get("id", "")
+                if mid and mid in seen_ids:
+                    continue
+                tap_id = (msg.get("button") or {}).get("payload") or ""
+                if tap_id and msg.get("from"):
+                    classified.append(InboundMessage(
+                        message_id=mid,
+                        from_number=msg.get("from", ""),
+                        message_type=MessageType.BUTTON_REPLY,
+                        timestamp=msg.get("timestamp", ""),
+                        raw=msg,
+                        button_id=tap_id,
+                        button_title=tap_id,
+                    ))
+                    if mid:
+                        seen_ids.add(mid)
+    return classified
+
+
+def _claim_inbound_messages(messages: list) -> list:
+    """Save-before-ack: insert new wamids as queued. Duplicates (PK clash)
+    are dropped - EXCEPT failed rows with attempts left, which Meta's own
+    redelivery reclaims (status back to queued, attempts preserved). That
+    is the retry transport: durable across restarts, bounded by
+    MAX_INBOUND_ATTEMPTS, and it never re-runs a done turn (no double-book).
+    Messages WITHOUT an id (old tests, malformed retries) cannot dedupe -
+    they always pass through, preserving legacy behaviour."""
+    from sqlalchemy.exc import IntegrityError
+    claimed = []
+    db = SessionLocal()
+    try:
+        for m in messages:
+            mid = (m.message_id or "").strip()
+            if not mid:
+                claimed.append(m)
+                continue
+            try:
+                db.add(ProcessedMessage(
+                    message_id=mid,
+                    phone=m.from_number or None,
+                    message_type=(m.message_type.value
+                                  if hasattr(m.message_type, "value")
+                                  else str(m.message_type)),
+                    status="queued",
+                ))
+                db.commit()
+                claimed.append(m)
+            except IntegrityError:
+                db.rollback()
+                row = db.query(ProcessedMessage).filter_by(
+                    message_id=mid).first()
+                if (row is not None and row.status == "failed"
+                        and (row.attempts or 0) < MAX_INBOUND_ATTEMPTS):
+                    row.status = "queued"
+                    db.commit()
+                    claimed.append(m)
+                    logger.info("Reclaim: retrying failed wamid %s "
+                                "(attempt %s)", mid, (row.attempts or 0) + 1)
+                else:
+                    logger.info("Dedup: dropping repeat wamid %s", mid)
+            except Exception as e:
+                db.rollback()
+                logger.warning("Claim failed for %s: %s", mid, e)
+    finally:
+        db.close()
+    return claimed
+
+
+def _mark_processed(message_id: str, status: str, error: str = None) -> None:
+    """Flip a claimed row to done/failed. Failed bumps attempts and keeps
+    the truncated error - the row stays reclaimable until attempts run
+    out, then it is permanently dropped (ops-visible via last_error)."""
+    if not (message_id or "").strip():
+        return
+    db = SessionLocal()
+    try:
+        row = db.query(ProcessedMessage).filter_by(
+            message_id=message_id).first()
+        if row is not None:
+            row.status = status
+            if status == "failed":
+                row.attempts = (row.attempts or 0) + 1
+                if error:
+                    row.last_error = str(error)[:500]
+            if status in ("done", "failed"):
+                row.processed_at = utcnow()
+            db.commit()
+    except Exception as e:
+        logger.warning("Mark %s=%s failed: %s", message_id, status, e)
+    finally:
+        db.close()
+
+
+def _msg_sort_key(m) -> tuple:
+    try:
+        return (0, int(str(m.timestamp or "0")))
+    except (ValueError, TypeError):
+        return (1, str(m.timestamp or ""))
+
+
+def _dispatch_single(msg) -> None:
+    """One classified message through the EXISTING pipeline. Typing bubble
+    lives here (background) so the webhook thread never blocks on network."""
+    from FareBeep.whatsapp.router import MessageType
+    phone = msg.from_number or ""
+    if not phone:
+        return
+    try:
+        MetaWhatsapp().send_typing_indicator(phone)
+    except Exception as e:
+        logger.warning("Typing bubble failed (%s): %s", phone, e)
+    if msg.message_type == MessageType.TEXT:
+        if (msg.text or "").strip():
+            _handle_incoming_message(phone, msg.text)
+        return
+    if msg.message_type == MessageType.UNKNOWN:
+        # Legacy tolerance: typeless payloads (old tests, early Meta
+        # shape) carry text.body with no "type" field. The old
+        # single-message path read that body directly - do the same
+        # rather than dropping a real customer message.
+        legacy = ((msg.raw or {}).get("text") or {}).get("body", "")
+        if isinstance(legacy, str) and legacy.strip():
+            _handle_incoming_message(phone, legacy)
+        return
+    if msg.message_type in (MessageType.BUTTON_REPLY,
+                            MessageType.LIST_REPLY):
+        tap_id = msg.button_id or msg.list_id or ""
+        if not tap_id:
+            return
+        tap = cards.translate_tap(tap_id)
+        if tap is None:
+            logger.warning("Meta tap ignored: unknown button id %r", tap_id)
+            return
+        if tap[0] == "alert":
+            _tap_alert_by_phone(phone, tap[1])
+            return
+        if tap[0] == "beep":
+            _tap_beep_by_phone(phone, tap[1])
+            return
+        _handle_incoming_message(
+            phone, str(tap[1]) if tap[0] == "pick" else "BOOK")
+        return
+    logger.info("Inbound %s from %s needs no concierge turn - ignored",
+                msg.message_type, phone)
+
+
+def _process_inbound_batch(messages: list) -> None:
+    """Background worker: FIFO per phone, then mark each row done/failed.
+    One phone group at a time; a single bad message never kills the batch
+    (booking safety: exceptions are contained per message)."""
+    grouped: dict = {}
+    order: list = []
+    for m in messages:
+        phone = m.from_number or ""
+        if not phone:
+            continue
+        if phone not in grouped:
+            grouped[phone] = []
+            order.append(phone)
+        grouped[phone].append(m)
+    for phone in order:
+        batch = sorted(grouped[phone], key=_msg_sort_key)
+        for m in batch:
+            try:
+                _dispatch_single(m)
+                _mark_processed(m.message_id, "done")
+            except Exception as e:
+                logger.error("Inbound handling failed (%s): %s",
+                             phone, e)
+                _mark_processed(m.message_id, "failed", error=str(e))
+
+
+def _record_statuses(payload: dict) -> int:
+    """Persist Meta outbound status callbacks (sent/delivered/read/failed)
+    into delivery_receipts (upsert per wamid). Returns the count recorded.
+    A failed receipt is ops-visible and loudly logged - but NEVER resent
+    from here: booking/payment texts must not be blind-retried."""
+    from FareBeep.models import DeliveryReceipt
+    recorded = 0
+    db = SessionLocal()
+    try:
+        for entry in payload.get("entry") or []:
+            for change in entry.get("changes", []):
+                value = change.get("value", {})
+                for st in value.get("statuses", []):
+                    if not isinstance(st, dict):
+                        continue
+                    mid = st.get("id", "")
+                    if not mid:
+                        continue
+                    status = st.get("status", "")
+                    phone = st.get("recipient_id")
+                    try:
+                        row = db.query(DeliveryReceipt).filter_by(
+                            message_id=mid).first()
+                        if row is None:
+                            db.add(DeliveryReceipt(
+                                message_id=mid, phone=phone, status=status))
+                        else:
+                            row.status = status
+                            if phone:
+                                row.phone = phone
+                        db.commit()
+                        recorded += 1
+                        if status == "failed":
+                            logger.warning(
+                                "Outbound %s to %s FAILED "
+                                "(see delivery_receipts - no auto-resend)",
+                                mid, phone)
+                    except Exception as e:
+                        db.rollback()
+                        logger.warning("Receipt upsert failed for %s: %s",
+                                       mid, e)
+    finally:
+        db.close()
+    return recorded
+
+
 @app.post("/webhook/meta")
 async def meta_webhook(request: Request, background: BackgroundTasks):
     raw = await request.body()
@@ -122,44 +392,16 @@ async def meta_webhook(request: Request, background: BackgroundTasks):
         return Response(status_code=403)
 
     payload = await request.json()
-    entry = (payload.get("entry") or [{}])[0]
-    changes = (entry.get("changes") or [{}])[0]
-    value = changes.get("value") or {}
-    message = (value.get("messages") or [{}])[0]
-    text = (message.get("text") or {}).get("body", "")
-    phone = message.get("from", "")
+    # Status callbacks ride the same webhook - record first so a
+    # statuses-only payload still tracks delivery before the 200 ack.
+    _record_statuses(payload)
+    claimed = _claim_inbound_messages(_classify_all_entries(payload))
 
-    # Flight-card + template taps (see FareBeep/cards.py): interactive
-    # button_reply/list_reply ids AND template quick-reply payloads
-    # (messages[].button.payload - the shape Meta uses for template
-    # buttons like the beep's "Book now"). pick:N reuses the "reply 1,
-    # 2, 3" gate, book is bare "BOOK", alert:N/beep:N subscribe or
-    # re-present. Unknown ids are ignored, never fed to the brain.
-    if phone:
-        interactive = message.get("interactive") or {}
-        tap_id = ((interactive.get("button_reply") or {}).get("id")
-                  or (interactive.get("list_reply") or {}).get("id")
-                  or (message.get("button") or {}).get("payload") or "")
-        if tap_id:
-            tap = cards.translate_tap(tap_id)
-            if tap is None:
-                logger.warning("Meta tap ignored: unknown button id %r", tap_id)
-                return Response(content="200 OK", media_type="text/plain")
-            if tap[0] == "alert":
-                background.add_task(_tap_alert_by_phone, phone, tap[1])
-                return Response(content="200 OK", media_type="text/plain")
-            if tap[0] == "beep":
-                background.add_task(_tap_beep_by_phone, phone, tap[1])
-                return Response(content="200 OK", media_type="text/plain")
-            text = str(tap[1]) if tap[0] == "pick" else "BOOK"
-
-    # Ack Meta immediately (20s deadline); handle the message off-thread.
-    if text and phone:
-        # Typing bubble first (best-effort): the chat feels alive while
-        # the brain works. MetaWhatsapp directly - never the global
-        # notifier, which may point at another channel.
-        MetaWhatsapp().send_typing_indicator(phone)
-        background.add_task(_handle_incoming_message, phone, text)
+    # Ack Meta immediately (20s deadline); the batch runs off-thread.
+    # NOTE: plain "200 OK" (not {"status":"ok"}) keeps the existing
+    # webhook contract + tests green - the status code is the ack.
+    if claimed:
+        background.add_task(_process_inbound_batch, claimed)
     return Response(content="200 OK", media_type="text/plain")
 
 

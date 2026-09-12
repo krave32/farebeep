@@ -227,8 +227,49 @@ class StatusEvent(Base):
     created_at = Column(DateTime(timezone=True), default=utcnow)
 
 
+# ---------------------------------------------------------------------------
+# processed_messages - WhatsApp inbound dedupe log (main.meta_webhook)
+# One row per Meta wamid (message_id). Inserted BEFORE the 200 ack
+# (save-before-ack), so a Meta retry or a worker restart never double-books.
+# Portable: String PK + DateTime work on both Supabase Postgres and SQLite.
+# status: queued -> done | failed (failed keeps the row so retries stay
+# idempotent - the next attempt re-queues by flipping back to queued).
+# ---------------------------------------------------------------------------
+class ProcessedMessage(Base):
+    __tablename__ = "processed_messages"
+
+    message_id = Column(String, primary_key=True)  # Meta wamid
+    phone = Column(String, index=True, nullable=True)
+    message_type = Column(String, nullable=True)
+    status = Column(String, default="queued")       # queued | done | failed
+    attempts = Column(Integer, default=0)           # background tries so far
+    last_error = Column(Text, nullable=True)        # last failure, truncated
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
+# ---------------------------------------------------------------------------
+# delivery_receipts - Meta outbound status callbacks (main.meta_webhook)
+# One row per OUTBOUND wamid (our sent message id), UPSERTed on every
+# sent -> delivered -> read transition. A "failed" status stays visible
+# for ops instead of vanishing into the log - but nothing here auto-resends:
+# resending is a product decision per message kind (never blind - booking
+# and payment messages are NEVER auto-retried from this table).
+# ---------------------------------------------------------------------------
+class DeliveryReceipt(Base):
+    __tablename__ = "delivery_receipts"
+
+    message_id = Column(String, primary_key=True)  # our outbound wamid
+    phone = Column(String, index=True, nullable=True)  # recipient_id
+    status = Column(String, default="sent")  # sent|delivered|read|failed
+    updated_at = Column(DateTime(timezone=True), default=utcnow,
+                        onupdate=utcnow)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+
+
 __all__ = [
     "Base", "utcnow",
     "User", "Subscription", "ChatState", "FareLedger", "FxRate",
     "BookingSession", "SessionStatus", "StatusWatch", "StatusEvent",
+    "ProcessedMessage", "DeliveryReceipt",
 ]

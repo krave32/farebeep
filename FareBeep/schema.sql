@@ -161,4 +161,39 @@ create table if not exists fx_rates (
 
 create index if not exists idx_fx_rates_fetched on fx_rates (fetched_at desc);
 
+-- ---------------------------------------------------------------------------
+-- processed_messages - WhatsApp inbound dedupe log (save-before-ack)
+-- message_id is the Meta wamid (UNIQUE PRIMARY KEY - ON CONFLICT DO NOTHING
+-- gives us idempotent inserts). status: queued -> done | failed.
+-- ---------------------------------------------------------------------------
+create table if not exists processed_messages (
+    message_id   text primary key,              -- Meta wamid
+    phone        text,                          -- sender phone
+    message_type text,                          -- text | button_reply | ...
+    status       text not null default 'queued',-- queued | done | failed
+    attempts     integer not null default 0,    -- background tries so far
+    last_error   text,                          -- last failure (truncated)
+    processed_at timestamptz,
+    created_at   timestamptz not null default now()
+);
+
+create index if not exists idx_processed_messages_phone
+    on processed_messages (phone, created_at);
+
+-- ---------------------------------------------------------------------------
+-- delivery_receipts - Meta outbound status callbacks (sent/delivered/read)
+-- Upserted per status event. "failed" rows are ops-visible; nothing here
+-- auto-resends (booking/payment messages are NEVER blind-retried).
+-- ---------------------------------------------------------------------------
+create table if not exists delivery_receipts (
+    message_id text primary key,                -- our outbound wamid
+    phone      text,                            -- recipient_id
+    status     text not null default 'sent',    -- sent|delivered|read|failed
+    updated_at timestamptz not null default now(),
+    created_at timestamptz not null default now()
+);
+
+create index if not exists idx_delivery_receipts_phone
+    on delivery_receipts (phone, updated_at);
+
 commit;
