@@ -194,27 +194,59 @@ def _restore_message(snap: dict):
     )
 
 
-def recover_orphaned_inbound(db=None) -> int:
-    """Startup recovery: re-dispatch every row still queued. At boot no
-    worker is alive, so any queued row is an orphan of a crash-after-ack
-    (claimed, 200 sent, process died). Rebuilt from stored payloads and
-    run through the normal FIFO batch - attempts accounting continues,
-    so a poison message still dead-letters instead of looping forever.
-    Returns the count recovered. Never raises (boot must not fail)."""
+def recover_orphaned_inbound(db=None, stale_minutes: int = 0) -> int:
+    """Re-dispatch rows stuck at queued, rebuilt from stored payloads.
+
+    Two callers:
+      - startup (_startup, stale_minutes=0): at boot no worker is alive,
+        so EVERY queued row is a crash-after-ack orphan - replay all.
+      - worker sweep (run_cycles, stale_minutes=5): periodic safety net
+        that needs NO restart and NO Meta redelivery. Only rows queued
+        longer than the cutoff are orphans - fresh rows may still have a
+        live background task working on them, so they are left alone.
+
+    ORDER RULE (shared with _process_inbound_batch): sender timestamp
+    first (user-intent order - one payload can arrive wire-shuffled),
+    claim time (created_at) breaks ties and orders separate requests.
+    See _arrival_key.
+
+    Attempts accounting continues, so a poison message still
+    dead-letters instead of looping forever. Rows with NO stored
+    payload (claimed by the pre-recovery build) can never be replayed:
+    stale ones are parked as exhausted/failed with an explicit error
+    instead of cycling. Returns the count re-dispatched. Never raises.
+    """
+    from datetime import timedelta
     own = db is None
     try:
         db = db or SessionLocal()
-        rows = (db.query(ProcessedMessage)
-                .filter(ProcessedMessage.status == "queued")
-                .order_by(ProcessedMessage.created_at).all())
-        orphaned = [r for r in rows if (r.payload or {}).get("message_id")]
-        if not orphaned:
+        query = (db.query(ProcessedMessage)
+                 .filter(ProcessedMessage.status == "queued")
+                 .order_by(ProcessedMessage.created_at))
+        if stale_minutes:
+            cutoff = utcnow() - timedelta(minutes=stale_minutes)
+            query = query.filter(ProcessedMessage.created_at < cutoff)
+        rows = query.all()
+        replayable = [r for r in rows
+                      if (r.payload or {}).get("message_id")]
+        for r in rows:
+            if not (r.payload or {}).get("message_id"):
+                # Pre-recovery row: unreplayable. Park it exhausted so
+                # neither the sweep nor a redelivery retries it forever.
+                r.status = "failed"
+                r.attempts = MAX_INBOUND_ATTEMPTS
+                r.last_error = ("no stored payload (claimed before crash "
+                                "recovery shipped) - ask the customer to "
+                                "resend")
+                r.processed_at = utcnow()
+        db.commit()
+        if not replayable:
             return 0
         logger.warning("Recovery: re-dispatching %d orphaned inbound "
-                       "message(s) after restart", len(orphaned))
+                       "message(s)", len(replayable))
         _process_inbound_batch([_restore_message(r.payload)
-                                for r in orphaned])
-        return len(orphaned)
+                                for r in replayable])
+        return len(replayable)
     except Exception as e:
         logger.error("Recovery sweep failed (orphans stay queued): %s", e)
         return 0
@@ -372,13 +404,6 @@ def _mark_processed(message_id: str, status: str, error: str = None) -> None:
         db.close()
 
 
-def _msg_sort_key(m) -> tuple:
-    try:
-        return (0, int(str(m.timestamp or "0")))
-    except (ValueError, TypeError):
-        return (1, str(m.timestamp or ""))
-
-
 def _dispatch_single(msg) -> None:
     """One classified message through the EXISTING pipeline. Typing bubble
     lives here (background) so the webhook thread never blocks on network."""
@@ -425,10 +450,40 @@ def _dispatch_single(msg) -> None:
                 msg.message_type, phone)
 
 
+def _arrival_key(row) -> tuple:
+    """Sort key for one customer's queued rows: sender timestamp first,
+    claim time second. Timestamp = the order the human typed them (Meta
+    can deliver one payload wire-shuffled); created_at = our arrival
+    record, which orders separate requests and breaks timestamp ties."""
+    snap = row.payload or {}
+    try:
+        ts = int(str(snap.get("timestamp") or ""))
+        has_ts = 0
+    except (ValueError, TypeError):
+        ts, has_ts = 0, 1
+    created = getattr(row, "created_at", None)
+    created_key = (created.isoformat() if hasattr(created, "isoformat")
+                   else str(created or ""))
+    return (has_ts, ts, created_key)
+
+
 def _process_inbound_batch(messages: list) -> None:
-    """Background worker: FIFO per phone, then mark each row done/failed.
-    One phone group at a time; a single bad message never kills the batch
-    (booking safety: exceptions are contained per message)."""
+    """Background worker: SAVED order per phone, then mark each row
+    done/failed. The messages list is only the trigger - the work order
+    comes from the DB (queued rows for the phone, see _arrival_key), so
+    separate webhook POSTs for one customer still run deterministically,
+    never in thread-scheduling order. In-memory copies of already-stored
+    rows are skipped (a racing batch may have taken them); id-less
+    messages run after the recorded ones. One bad message never kills
+    the batch (booking safety: exceptions are contained per message).
+
+    Crash-mid-turn honesty: a turn that dies AFTER writing a booking
+    but BEFORE done WILL re-run on recovery/redelivery and can leave a
+    second PENDING session (new payment_ref). Money still moves only via
+    Paystack per unique ref, settle is idempotent, and the worker expiry
+    sweep clears stale pendings - but exactly-once booking is NOT
+    claimed here (see test_booking_crash_mid_turn_documents_duplicates).
+    """
     grouped: dict = {}
     order: list = []
     for m in messages:
@@ -444,8 +499,26 @@ def _process_inbound_batch(messages: list) -> None:
         # same phone (concurrent webhook POSTs, recovery vs live) - the
         # lock is per phone, so different customers still run parallel.
         with _phone_lock(phone):
-            batch = sorted(grouped[phone], key=_msg_sort_key)
-            for m in batch:
+            db = SessionLocal()
+            try:
+                rows = (db.query(ProcessedMessage)
+                        .filter(ProcessedMessage.status == "queued",
+                                ProcessedMessage.phone == phone)
+                        .order_by(ProcessedMessage.created_at).all())
+                rows = sorted(rows, key=_arrival_key)
+            finally:
+                db.close()
+            work = []
+            for r in rows:
+                snap = r.payload or {}
+                if snap.get("message_id"):
+                    work.append(_restore_message(snap))
+                # Payload-less rows are the sweep's job (parked, not
+                # replayed) - never dispatched from here.
+            for m in grouped[phone]:
+                if not (m.message_id or "").strip():
+                    work.append(m)  # id-less: no arrival record, run as-is
+            for m in work:
                 try:
                     _dispatch_single(m)
                     _mark_processed(m.message_id, "done")

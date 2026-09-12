@@ -201,3 +201,96 @@ def test_same_book_wamid_creates_one_booking(client, monkeypatch,
     assert _post(client, payload).status_code == 200
     assert _post(client, payload).status_code == 200  # Meta retry
     assert created == ["FB-T1"]
+
+
+def test_booking_crash_mid_turn_documents_duplicates(client, monkeypatch,
+                                                     session_factory):
+    """Mid-turn crash honesty. Evidence first: _handle_incoming_message
+    swallows concierge errors itself (a failed create_booking becomes a
+    'try again' reply, turn marked done) - so the crash that reaches the
+    bridge is one that kills the turn AFTER the booking row exists but
+    BEFORE done (process death in that window). Simulated here by running
+    the real BOOK turn once, then raising post-write.
+
+    Result: recovery re-runs the whole turn -> a SECOND pending session
+    with a NEW ref. So at-least-once redelivery CAN duplicate the booking
+    ROW. What is evidenced against double CHARGING: unique payment_ref
+    per session, settle_payment idempotency (already_paid - see
+    test_transactions), settle reachable only via the Paystack webhook,
+    and the worker expiry sweep clearing stale pendings. Exactly-once
+    booking is NOT claimed."""
+    phone = "+2348012345678"
+    created = []
+    real_handle = main._handle_incoming_message
+    mode = {"crash": True}
+
+    class _FakeSearch:
+        def __init__(self, db):
+            pass
+
+        def search(self, *a, **k):
+            return {"source": "serpapi", "flight_date": "2026-09-20",
+                    "price": 85000.0, "airline": "Rano Air",
+                    "flight_number": "RN 303",
+                    "verify_link": "https://example.com/x"}
+
+    class _CountingBookings:
+        def __init__(self, db):
+            pass
+
+        def create_booking(self, user_id, origin, destination, flight_date,
+                           airline_price, **kwargs):
+            ref = f"FB-C{len(created) + 1}"
+            session = BookingSession(
+                user_id=user_id, origin=origin, destination=destination,
+                flight_date=flight_date, airline_price=airline_price,
+                markup=5000.0, processing_fee=0.0,
+                total_price=airline_price, status="pending",
+                expires_at=utcnow() + timedelta(minutes=10),
+                payment_ref=ref)
+            db = main.SessionLocal()
+            db.add(session)
+            db.commit()
+            created.append(ref)
+            return {"session": session, "total_amount": airline_price,
+                    "expires_at": session.expires_at,
+                    "payment_link": "https://checkout.paystack.com/x"}
+
+    def _handle_then_die(p, text):
+        real_handle(p, text)  # real BOOK turn: session row written...
+        if mode["crash"]:
+            raise RuntimeError("process died before done-marking")
+
+    monkeypatch.setattr(main, "LedgerSearch", _FakeSearch)
+    monkeypatch.setattr(main, "BookingService", _CountingBookings)
+    monkeypatch.setattr(main, "_handle_incoming_message", _handle_then_die)
+    db = session_factory()
+    chatstate.set_last_fare(db, phone, {
+        "origin_iata": "LOS", "destination_iata": "ABV",
+        "flight_date": "2026-09-20", "price": 85000.0,
+        "airline": "Rano Air"})
+    db.commit()
+    db.close()
+
+    payload = _text_payload("wamid-bookcrash", phone, "BOOK", 12)
+    assert _post(client, payload).status_code == 200  # turn crashes
+    db = session_factory()
+    pendings = db.query(BookingSession).filter_by(status="pending").all()
+    db.close()
+    assert [s.payment_ref for s in pendings] == ["FB-C1"]
+
+    mode["crash"] = False
+    assert _post(client, payload).status_code == 200  # Meta redelivers
+    db = session_factory()
+    try:
+        pendings = db.query(BookingSession).filter_by(
+            status="pending").order_by(BookingSession.created_at).all()
+        refs = [s.payment_ref for s in pendings]
+        paid = db.query(BookingSession).filter(
+            BookingSession.status != "pending").count()
+    finally:
+        db.close()
+    # Documented, not hidden: TWO pending rows, unique refs, NOTHING paid
+    # (settle happens only via the Paystack webhook per ref).
+    assert refs == ["FB-C1", "FB-C2"]
+    assert paid == 0

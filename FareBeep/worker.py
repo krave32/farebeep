@@ -95,9 +95,23 @@ def run_cycles(notifier=None, api=None) -> dict:
             .run_cycle()
         logger.info("Worker cycle: %d session(s) expired, %d status push(es), "
                     "%d fare beep(s)", expired, pushed, beeps)
-        return {"expired": expired, "status_pushes": pushed, "fare_beeps": beeps}
+        result = {"expired": expired, "status_pushes": pushed,
+                  "fare_beeps": beeps}
     finally:
         db.close()
+    # Inbound orphan sweep (leader replica only - run_cycles never runs on
+    # web-only replicas): rescue crash-orphaned webhook turns with NO
+    # restart and NO Meta redelivery. Stale-only so live in-flight
+    # batches are never touched. Lazy import: worker must stay importable
+    # without pulling the FastAPI app at module load.
+    try:
+        from FareBeep.main import recover_orphaned_inbound
+        result["orphans_recovered"] = recover_orphaned_inbound(
+            stale_minutes=5)
+    except Exception as e:
+        logger.error("Orphan sweep failed (non-fatal): %s", e)
+        result["orphans_recovered"] = 0
+    return result
 
 
 def run_fare_cycle(notifier=None) -> int:
