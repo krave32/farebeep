@@ -37,6 +37,7 @@ def client(monkeypatch, session_factory):
     monkeypatch.setattr(main, "META_APP_SECRET", "test-app-secret")
     monkeypatch.setattr(main, "SessionLocal", session_factory)
     monkeypatch.setattr(main.brain, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)  # deterministic path
     # No network from the background batch: stub the typing bubble.
     monkeypatch.setattr(main, "MetaWhatsapp",
                         lambda *a, **k: type("W", (), {

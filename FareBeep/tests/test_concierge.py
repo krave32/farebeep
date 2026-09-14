@@ -14,6 +14,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from FareBeep import chatstate, main
+from FareBeep.dates import lagos_today
 from FareBeep.models import Base, ChatState, User
 
 
@@ -123,6 +124,13 @@ def client(monkeypatch, session_factory):
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "farebeep-test-secret")
     monkeypatch.setattr(main, "SessionLocal", session_factory)
     monkeypatch.setattr(main.brain, "GEMINI_API_KEY", None)  # local parser
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)  # deterministic path
+    # hermetic typing bubble: TELEGRAM_BOT_TOKEN is set in FareBeep/.env,
+    # so the webhook's best-effort typing call would hit the real API
+    monkeypatch.setattr(
+        "FareBeep.notifier.TelegramBot",
+        lambda *a, **k: type("T", (), {"send_action": staticmethod(
+            lambda to, action="typing": True)})())
     # fresh per-chat context per test - wipe the DB-backed chat_state
     db = session_factory()
     db.query(ChatState).delete()
@@ -182,6 +190,40 @@ def test_incomplete_destination_only_asks_followup(client):
     assert "Abuja" in body
 
 
+def test_ambiguous_slash_date_asks_then_completes(client, monkeypatch):
+    """A date that reads two ways (05/06 = 5 June or 6 May) must NEVER be
+    guessed: the bot asks, remembers the route, and searches only after
+    the user answers plainly. The guard runs BEFORE the agent (pinned by
+    a marker reply): ambiguous dates never reach the agent's tools."""
+    monkeypatch.setattr(main, "GROQ_API_KEY", "test-key")
+    monkeypatch.setattr("FareBeep.agent.agent_reply",
+                        lambda *a, **k: "AGENT MARKER - must not run")
+    test_client, fake, ledger = client
+    ledger["inst"] = RecordingLedger(None, fares=_ranked_fares())
+
+    r = _post(test_client, "Lagos to Abuja 05/06")
+    assert r.status_code == 200
+    body = fake.sent[-1][1]
+    assert "AGENT MARKER" not in body
+    assert "did you mean" in body.lower()
+    assert "June" in body and "May" in body
+    pending = _pending_fare()
+    assert pending["origin_iata"] == "LOS"
+    assert pending["destination_iata"] == "ABV"
+    assert pending["date"] is None
+    assert ledger["inst"].calls == []  # no search on a guessed date
+
+    r = _post(test_client, "5 June")
+    assert r.status_code == 200
+    inst = ledger["inst"]
+    origin, destination, flight_date, _ = inst.calls[-1]
+    assert (origin, destination) == ("LOS", "ABV")
+    today = lagos_today()
+    year = today.year + (1 if (today.month, today.day) > (6, 5) else 0)
+    assert flight_date == date(year, 6, 5).isoformat()
+    assert _pending_fare() is None  # consumed
+
+
 def test_going_to_lagos_does_not_search_lagos_to_lagos(client):
     """'I'm going to Lagos on next week thursday' must NOT default the origin
     to the hub (Lagos) and search Lagos->Lagos - it asks where they're
@@ -218,7 +260,7 @@ def test_followup_city_answer_completes_pending_fare(client):
     origin, destination, flight_date, _ = inst.calls[-1]
     assert origin == "ABV"                        # Abuja
     assert destination == "LOS"                   # Lagos
-    today = date.today()
+    today = lagos_today()
     expected = (today + timedelta(days=(7 - today.weekday()) + 3)).isoformat()
     assert flight_date == expected                # next week Thursday
     assert _pending_fare() is None  # consumed
@@ -254,8 +296,8 @@ def test_natural_shortcut_searches_with_default_origin(client):
     origin, destination, flight_date, _ = inst.calls[0]
     assert origin == "LOS"          # Pass 2: Lagos is the default hub
     assert destination == "ABV"
-    expected = (date.today() + timedelta(
-        days=(7 - date.today().weekday()) + 1)).isoformat()
+    expected = (lagos_today() + timedelta(
+        days=(7 - lagos_today().weekday()) + 1)).isoformat()
     assert flight_date == expected          # next calendar week Tuesday
     body = fake.sent[-1][1]
     assert "Air Peace" in body
@@ -342,11 +384,15 @@ def test_bare_book_after_fare_uses_quoted_date(client, monkeypatch):
     # step 2: bare BOOK - no route, no date in the message
     r = _post(test_client, "BOOK")
     assert r.status_code == 200
-    assert fake_calls["flight_date"] == "2026-08-31", fake_calls
+    # next occurrence of Aug 31: this year if ahead of it, else next year
+    today = lagos_today()
+    year = today.year + (1 if (today.month, today.day) > (8, 31) else 0)
+    expected = date(year, 8, 31).isoformat()
+    assert fake_calls["flight_date"] == expected, fake_calls
     assert fake_calls["origin"] == "LOS"
     assert fake_calls["destination"] == "ABV"
     # the user sees the quoted date, not today
-    assert "2026-08-31" in fake.sent[-1][1]
+    assert expected in fake.sent[-1][1]
     assert "TEST MODE" in fake.sent[-1][1]
 
 

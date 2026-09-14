@@ -28,6 +28,13 @@ def client(monkeypatch, session_factory):
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "farebeep-test-secret")
     monkeypatch.setattr(main, "SessionLocal", session_factory)
     monkeypatch.setattr(main.brain, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)  # deterministic path
+    # hermetic typing bubble: TELEGRAM_BOT_TOKEN is set in FareBeep/.env,
+    # so the webhook's best-effort typing call would hit the real API
+    monkeypatch.setattr(
+        "FareBeep.notifier.TelegramBot",
+        lambda *a, **k: type("T", (), {"send_action": staticmethod(
+            lambda to, action="typing": True)})())
 
     class FakeLedger:
         def __init__(self, db):

@@ -64,7 +64,8 @@ def _validate_beep(d: dict) -> str | None:
     if d["origin"] == d["destination"]: return "Cities must differ."
     if not d.get("departure_date"): return "Select a travel date."
     try:
-        if datetime.strptime(d["departure_date"], "%Y-%m-%d").date() < date.today():
+        from FareBeep.dates import lagos_today
+        if datetime.strptime(d["departure_date"], "%Y-%m-%d").date() < lagos_today():
             return "Date cannot be in the past."
     except (ValueError, TypeError):
         return "Invalid date."

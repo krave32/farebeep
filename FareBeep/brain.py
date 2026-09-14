@@ -61,7 +61,8 @@ WHAT EACH INTENT MEANS - apply these definitions first:
   one; extract the date too if given.
 - "unsubscribe" = wants alerts STOPPED ("unsubscribe", "stop alerts", "I
   don't want alerts anymore", "no more alerts", "opt out", "cancel my
-  alerts", "stop" alone).
+  alerts", "stop" alone). Negated phrasing ("don't cancel", "do not
+  stop", "never mind") is NEVER unsubscribe - return "help".
 - "help" = greeting, small talk, thanks, "ok", "good", or anything
   unrelated to flights.
 
@@ -110,6 +111,10 @@ class Intent:
     origin: Optional[str] = None
     destination: Optional[str] = None
     date: Optional[str] = None          # "YYYY-MM-DD"
+    date_hint: Optional[str] = None     # confirmation question when the
+                                        # date text reads two ways (the
+                                        # date itself stays None until the
+                                        # user answers plainly)
     target_price: Optional[float] = None
     flight: Optional[str] = None
     name: Optional[str] = None          # user name if they introduced themselves
@@ -139,6 +144,7 @@ class Intent:
             "origin": self.origin_iata,
             "destination": self.destination_iata,
             "date": self.date,
+            "date_hint": self.date_hint,
             "target_price": self.target_price,
             "flight": self.flight,
             "name": self.name,
@@ -150,11 +156,13 @@ VALID_INTENTS = {"fare", "book", "status", "track",
 
 
 def _today() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d")
+    from FareBeep.dates import lagos_today
+    return lagos_today().isoformat()
 
 
 def _today_weekday() -> str:
-    return datetime.utcnow().strftime("%A")
+    from FareBeep.dates import LAGOS_TZ
+    return datetime.now(LAGOS_TZ).strftime("%A")
 
 
 def parse_intent(text: str, api_key: str = None, model: str = None,
@@ -270,13 +278,9 @@ def _build_intent(content: str, raw: str) -> Optional[Intent]:
 # gets a proper intent from this deterministic parser instead of a help menu.
 # It only fires for clear patterns the local dictionary can resolve.
 
-_MONTHS = {name: i + 1 for i, name in enumerate(
-    ["january", "february", "march", "april", "may", "june", "july",
-     "august", "september", "october", "november", "december"])}
-
-_WEEKDAYS = {name: i for i, name in enumerate(
-    ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
-     "sunday"])}
+# Date tables live in FareBeep.dates (single home shared with the agent
+# tools); re-exported here so existing imports keep working.
+from FareBeep.dates import _MONTHS, _WEEKDAY_RE, _WEEKDAYS
 
 _FLIGHT_RE = re.compile(r"\b[a-z]{1,2}\d{3,5}\b")
 # Price is unambiguous only after a threshold word (below/under/less/max),
@@ -299,10 +303,6 @@ _NAME_RE = re.compile(
     r"coming\b|flying\b|travell?ing\b|leaving\b|arriving\b|looking\b|"
     r"hoping\b|planning\b|trying\b|sorry\b|happy\b|new\b|not\b|just\b)"
     r"([a-z]{2,})\b")
-
-_WEEKDAY_RE = re.compile(
-    r"\b((?:next|this|coming)\s+)?"
-    r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b")
 
 # Phrases about an EXISTING booking/flight -> status (checked before book).
 _STATUS_RE = re.compile(
@@ -367,114 +367,14 @@ def _local_route(text: str) -> Optional[list]:
     return route or None
 
 
-def _local_date(text: str) -> Optional[str]:
-    today = date.today()
-    if "day after tomorrow" in text:
-        return (today + timedelta(days=2)).isoformat()
-    if "tomorrow" in text:
-        return (today + timedelta(days=1)).isoformat()
-    if re.search(r"\btoday\b|\bnow\b", text):
-        return today.isoformat()
-    # "next week thursday" = the Thursday of the NEXT calendar week (Mon-Sun
-    # after the current one). Days until that week's Monday = 7 - today.weekday()
-    # (Monday=0), so delta = (7 - today.weekday()) + target. On Saturday that is
-    # 5 days, NOT 12 - "a week from now + Thursday" would be the week AFTER next.
-    m = re.search(
-        r"\bnext\s+week\s+(monday|tuesday|wednesday|thursday|friday|"
-        r"saturday|sunday)\b", text)
-    if m:
-        target = _WEEKDAYS[m.group(1)]
-        return (today + timedelta(days=(7 - today.weekday()) + target)
-                ).isoformat()
-    if "next week" in text:
-        return (today + timedelta(days=7)).isoformat()
-    m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", text)
-    if m:
-        return m.group(0)
-    # Slash/dash dates: "31/08", "31-08", "08/31" - day/month first, swapped
-    # only when the first part can't be a day (>12), so US order works too.
-    m = re.search(r"\b(\d{1,2})\s*[/-]\s*(\d{1,2})(?:[/-]\d{2,4})?\b", text)
-    if m:
-        a, b = int(m.group(1)), int(m.group(2))
-        day, month = (b, a) if a <= 12 < b else (a, b)
-        if not (1 <= month <= 12 and 1 <= day <= 31):
-            return None
-        year = today.year
-        try:
-            if date(year, month, day) < today:
-                year += 1   # 31/08 already passed -> next year
-            return date(year, month, day).isoformat()
-        except ValueError:
-            return None
-    wd = _WEEKDAY_RE.search(text)
-    if wd:
-        target = _WEEKDAYS[wd.group(2)]
-        if wd.group(1) and "next" in wd.group(1):
-            delta = (7 - today.weekday()) + target   # next calendar week
-        else:
-            delta = (target - today.weekday()) % 7
-            if delta == 0:
-                delta = 7                                   # always future
-        return (today + timedelta(days=delta)).isoformat()
-    mm = re.search(r"\b(" + "|".join(_MONTHS) + r")\b", text)
-    if mm:
-        month = _MONTHS[mm.group(1)]
-        year = today.year
-        day = 1
-        dm = (re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+" + mm.group(1) + r"\b", text)
-              or re.search(mm.group(1) + r"\s+(\d{1,2})(?:st|nd|rd|th)?\b", text))
-        if dm:
-            day = int(dm.group(1))
-            if (today.month, today.day) > (month, day):
-                year += 1  # named date already passed -> next occurrence
-        elif (today.month, today.day) > (month, 1):
-            year += 1  # "in August" after Aug 1 -> next August
-        try:
-            return date(year, month, day).isoformat()
-        except ValueError:
-            return None
-    # Bare ordinal day with no month: "31st", "on the 2nd" -> this month if
-    # still ahead, otherwise the same day next month ("5th" on Aug 13 -> Sep 5).
-    m = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)\b", text)
-    if m:
-        day = int(m.group(1))
-        month, year = today.month, today.year
-        try:
-            candidate = date(year, month, day)
-        except ValueError:
-            candidate = None
-        if candidate is None or candidate < today:
-            month += 1
-            if month > 12:
-                month, year = 1, year + 1
-        try:
-            return date(year, month, day).isoformat()
-        except ValueError:
-            return None
-    # A BARE NUMBER is the day of the CURRENT month: "31", "the 31", "on 5"
-    # -> this month if still ahead, otherwise next month. Times (10:30,
-    # 10am, 9pm), years (2026) and prices (80k, 15000) never match.
-    m = re.search(
-        r"(?:\b(?:on|the|for)\s+)?(?<![\d:])(\d{1,2})(?![:\d])(?![a-z])\b",
-        text, re.IGNORECASE)
-    if m:
-        day = int(m.group(1))
-        if not 1 <= day <= 31:
-            return None
-        month, year = today.month, today.year
-        try:
-            candidate = date(year, month, day)
-        except ValueError:
-            candidate = None
-        if candidate is None or candidate < today:
-            month += 1
-            if month > 12:
-                month, year = 1, year + 1
-        try:
-            return date(year, month, day).isoformat()
-        except ValueError:
-            return None
-    return None
+def _local_date(text: str, today=None) -> Optional[str]:
+    """Deterministic expression parser (offline fallback). The rules live
+    in FareBeep.dates.parse_expression - shared with the agent tools so
+    both paths resolve every expression identically. `today` defaults to
+    Africa/Lagos (the customer's wall clock, not the server's); pass an
+    explicit date in tests."""
+    from FareBeep.dates import lagos_today, parse_expression
+    return parse_expression(text, today=today or lagos_today())
 
 
 def single_city(text: str) -> Optional[str]:
@@ -530,6 +430,16 @@ def _local_parse(text: str) -> Optional[Intent]:
     day = _local_date(flat)
     name = _local_name(flat)
 
+    # Ambiguous date text ("05/06" reads two ways): never guess a travel
+    # date - drop it and carry the confirmation question instead. Pass 2
+    # asks it; the user's plain answer ("5 June") parses unambiguously.
+    date_hint = None
+    if day is not None:
+        from FareBeep.dates import ambiguous_date_hint
+        date_hint = ambiguous_date_hint(flat)
+        if date_hint is not None:
+            day = None
+
     # STATUS: an existing booking/flight - "check my booking", "where is my
     # flight", "track my booking", "track P47123", bare "status". Price
     # questions ("how much is my flight") are fare, not status.
@@ -549,7 +459,8 @@ def _local_parse(text: str) -> Optional[Intent]:
         return Intent(intent="subscribe",
                       origin=route[0] if route else None,
                       destination=route[1] if len(route or []) > 1 else None,
-                      date=day, target_price=target, name=name, raw_text=text)
+                      date=day, date_hint=date_hint, target_price=target,
+                      name=name, raw_text=text)
 
     if _BOOK_RE.search(flat):
         # "BOOK" alone, "book lagos to abuja tomorrow" - the route and date
@@ -558,7 +469,8 @@ def _local_parse(text: str) -> Optional[Intent]:
         return Intent(intent="book",
                       origin=route[0] if len(route or []) > 1 else None,
                       destination=route[1] if len(route or []) > 1 else None,
-                      date=day, flight=flight, name=name, raw_text=text)
+                      date=day, date_hint=date_hint, flight=flight,
+                      name=name, raw_text=text)
 
     if route:
         # PASS 1 EXTRACTION: partial routes stay partial ("I'm going to
@@ -571,7 +483,8 @@ def _local_parse(text: str) -> Optional[Intent]:
             return Intent(intent="fare",
                           origin=route[0] if len(route) > 1 else None,
                           destination=route[1] if len(route) > 1 else route[0],
-                          date=day, name=name, raw_text=text)
+                          date=day, date_hint=date_hint, name=name,
+                          raw_text=text)
 
     if _GREETING_RE.search(flat) or name:
         return Intent(intent="help", name=name, raw_text=text)
@@ -684,6 +597,9 @@ Rules:
   the best value for a morning flight."), but keep it tight.
 - Keep EVERY option's number, airline, departure time and price EXACTLY as
   given. Never invent a fare, a price or a time.
+- Keep the closing freshness line about checked/cached prices and the
+  BOOK re-confirmation promise - rephrase it freely but never drop it
+  and never call a cached fare live.
 - Make it easy to answer: keep the options clearly numbered (1., 2., 3.).
 - MAX 4 body lines. No markdown. No bullet symbols.
 - End by inviting them to reply with the number they want.
@@ -865,6 +781,24 @@ def _fare_lines(fares: list) -> list:
             for i, f in enumerate(fares, start=1)]
 
 
+def _list_freshness(fares: list) -> str:
+    """One freshness line for a ranked list ("Prices checked just now -
+    reply BOOK and I'll re-confirm live before you pay."). Ranked lists
+    are live-fetched; if a fare ever arrives cached, the line says so
+    instead of claiming just-now."""
+    from FareBeep.search import fare_freshness
+    labels = {fare_freshness(f) for f in (fares or [])}
+    labels.discard("")
+    if not labels:
+        return ""
+    if labels == {"checked just now"}:
+        return ("Prices checked just now - reply BOOK and I'll re-confirm "
+                "live before you pay.\n\n")
+    oldest = sorted(labels, reverse=True)[0]
+    return (f"Prices {oldest} - reply BOOK and I'll re-confirm live "
+            f"before you pay.\n\n")
+
+
 def _fare_options_json(fares: list) -> str:
     """The numbered options as JSON for the LLM (prices kept exact)."""
     return json.dumps([
@@ -894,9 +828,10 @@ def compose_ranked_reply(fares: list, origin: str, destination: str,
     model = model or GEMINI_MODEL
     greeting = _greeting(user_name)
     lines = _fare_lines(fares)
+    fresh = _list_freshness(fares)
     template = (f"Here's what I found {origin} -> {destination} on "
                 f"{flight_date}:\n" + "\n".join(lines)
-                + f"\n\nWhich one would you like? Reply "
+                + f"\n\n{fresh}Which one would you like? Reply "
                 + _reply_choices(len(fares)) + ".")
     if not api_key:
         return _warm_fallback(template, greeting)
@@ -906,7 +841,9 @@ def compose_ranked_reply(fares: list, origin: str, destination: str,
               .replace("{greeting}", greeting)
               .replace("{origin}", origin)
               .replace("{destination}", destination)
-              .replace("{date}", flight_date))
+              .replace("{date}", flight_date)
+              + "\n\nFreshness line (keep as the closing line): "
+              + _list_freshness(fares).strip())
     payload = {
         "contents": [{"parts": [{"text": prompt + "\n\nOptions:\n" + options}]}],
         "generationConfig": {"temperature": 0.6, "maxOutputTokens": 4096},

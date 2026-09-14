@@ -35,12 +35,18 @@ def user(db):
 
 @pytest.fixture(autouse=True)
 def _hermetic(monkeypatch):
+    from datetime import date
     monkeypatch.setattr(
         transactions, "initialize_paystack_payment",
         lambda ref, total, email: {
             "access_code": f"AC_{ref}",
             "authorization_url": f"https://paystack.com/pay/{ref}"})
     monkeypatch.setattr(agent_mod, "GROQ_API_KEY", "test-groq-key")
+    # Freeze "today" before every hardcoded fixture date (2026-08-20 and
+    # later): past-date validation must not rot this suite as real time
+    # passes the fixture dates.
+    monkeypatch.setattr("FareBeep.dates.lagos_today",
+                        lambda: date(2026, 8, 1))
 
 
 OFFER = {"flight_no": "P47123", "airline": "P4",

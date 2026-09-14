@@ -80,8 +80,9 @@ questions unless the user brings them up again themselves.
 
 WHAT YOU CAN DO
 1. Search one-way domestic flights (search_fares).
-2. Lock a fare for 10 minutes and take payment via Paystack
-   (reserve_fare -> payment link).
+2. Hold our quoted total for 10 minutes and take payment via Paystack
+   (reserve_fare -> payment link). The airline holds nothing - the hold
+   is ours alone.
 3. Watch a route for price drops, free (subscribe_alerts -> beep).
 4. Manage existing watches: list, pause, resume, cancel, edit the
    target, or clear it to drop-watch (manage_alerts).
@@ -109,9 +110,11 @@ or somewhere else?") - never stating it as fact.
 DATES
 Convert relative dates yourself using the Today line in your header
 and CONFIRM the result - never re-ask a date the user already gave.
-"Tomorrow" (or "next tomorrow") means tomorrow's date: say it back
-("Got it - Lagos to Enugu tomorrow, Sunday 7 September?") instead of
-asking "which exact date?". Same for "next Friday", "on the 21st".
+"Tomorrow" means tomorrow's date; "next tomorrow" is Nigerian English
+for the DAY AFTER tomorrow (two days out) - never confuse the two. Say
+the resolved date back ("Got it - Lagos to Enugu tomorrow, Sunday
+7 September?") instead of asking "which exact date?". Same for
+"next Friday", "on the 21st".
 Only ask about the date when the user gave none at all, or two
 readings genuinely clash. Never assume today.
 
@@ -126,6 +129,8 @@ Ask for a date only when booking or refreshing live.
 - If found=false: say plainly there are no live offers and offer the
   nearest alternative. Do NOT retry the identical call.
 - If the result has a "note", read it out - fares are unusually high.
+- Read the freshness note in parentheses out exactly ("Cached ~12 min
+  ago", "Checked just now") - never present a cached fare as live.
 
 TOOL 2: reserve_fare
 Call it ONLY when the user says yes/book/lock/pay for an offer you
@@ -133,7 +138,8 @@ just presented. You need the booking_token from the LATEST search plus
 the passenger's full name.
 - Send the payment link immediately with the summary line. Warn once
   that the total is slightly above the fare (service + bank fees) and
-  that the lock lasts 10 minutes.
+  that our hold lasts 10 minutes - the airline itself holds no seats,
+  so never promise a supplier fare lock.
 - If locked=false: explain the one-line error and search again fresh.
   Never call reserve twice in a row with the same token.
 
@@ -213,7 +219,20 @@ async def _verify_and_close(sky, booking_token, adults):
 
 
 def _today() -> str:
-    return utcnow().strftime("%A, %d %B %Y")
+    from FareBeep.dates import LAGOS_TZ
+    from datetime import datetime
+    return datetime.now(LAGOS_TZ).strftime("%A, %d %B %Y")
+
+
+def _fresh_note(fare: dict) -> str:
+    """Freshness fragment for a ledger-sourced summary ("Cached ~12 min
+    ago" / "checked just now"). Never empty here: ledger results always
+    carry checked_at, and the fallback says "cached fare" rather than
+    letting a cached price read as live."""
+    from FareBeep.search import fare_freshness
+    label = fare_freshness({"source": "ledger",
+                            "checked_at": fare.get("checked_at")})
+    return label[0].upper() + label[1:] if label else "Cached fare"
 
 
 def _fare_extra(fare: dict) -> str:
@@ -285,12 +304,23 @@ def build_tools(db: Session, phone: str) -> list:
 
     def search_fares(origin: str, destination: str, flight_date: str = "",
                      adults: int = 1) -> str:
+        from FareBeep.dates import DateError, validate_adults
+        from FareBeep.dates import validate_flight_date
         o = resolve_iata(origin or "")
         d = resolve_iata(destination or "")
-        date = (flight_date or "")[:10]
         if not o or not d:
             return json.dumps({"found": False, "error":
                                "need origin and destination"})
+        try:
+            n_adults = validate_adults(adults)
+        except DateError as e:
+            return json.dumps({"found": False, "error": str(e)})
+        date = ""
+        if (flight_date or "").strip():
+            try:
+                date = validate_flight_date(flight_date)
+            except DateError as e:
+                return json.dumps({"found": False, "error": f"bad date: {e}"})
         ledger = LedgerSearch(db, live=LedgerOnlyEngine())
         if not date:
             # No date: answer INSTANTLY from the best known fare - no live
@@ -311,7 +341,9 @@ def build_tools(db: Session, phone: str) -> list:
                 "summary": (f"{best.get('airline') or 'Airline'}, "
                             f"{o}->{d} on {best['flight_date']} - "
                             f"NGN {best['price']:,.0f}"
-                            f"{_fare_extra(best)}. Want it?"),
+                            f"{_fare_extra(best)}. "
+                            f"({_fresh_note(best)} I'll re-check live "
+                            f"before any booking.) Want it?"),
                 "price_ngn": best["price"],
                 "flight_date": best["flight_date"],
                 "note": ("Prices are unusually high right now."
@@ -327,13 +359,15 @@ def build_tools(db: Session, phone: str) -> list:
                 "summary": (f"{hit.get('airline') or 'Airline'}, "
                             f"{o}->{d} on {date} - "
                             f"NGN {hit['price']:,.0f}"
-                            f"{_fare_extra(hit)}. Want it?"),
+                            f"{_fare_extra(hit)}. "
+                            f"({_fresh_note(hit)} I'll re-check live "
+                            f"before any booking.) Want it?"),
                 "price_ngn": hit["price"],
                 "note": ("Prices are unusually high right now."
                          if hit.get("above_guardrail") else None)})
         sky = Travels247Client()
         offers = _run_async(_search_and_close(
-            sky, o, d, date, max(adults, 1)))
+            sky, o, d, date, n_adults))
         best = pick_cheapest(offers)
         if best is None:
             return json.dumps({"found": False, "source": "247travels",
@@ -357,21 +391,32 @@ def build_tools(db: Session, phone: str) -> list:
                         f"{best.get('arrival_code') or d} "
                         f"{best.get('arrival_time') or ''} - "
                         f"NGN {best['price']:,.0f}"
-                        f"{_fare_extra(best)}. Want it?"),
+                        f"{_fare_extra(best)}. "
+                        f"(Checked just now.) Want it?"),
             "price_ngn": best["price"],
             "booking_token": best["booking_token"]})
 
     def reserve_fare(booking_token: str, origin: str, destination: str,
                      flight_date: str, passenger_name: str, adults: int = 1,
                      payment_method: str = None) -> str:
+        from FareBeep.dates import DateError, validate_adults
+        from FareBeep.dates import validate_flight_date
         o = resolve_iata(origin or "")
         d = resolve_iata(destination or "")
-        date = (flight_date or "")[:10]
         name = (passenger_name or "").strip()
-        if not booking_token or not o or not d or not date:
+        if not booking_token or not o or not d or not (flight_date or "").strip():
             return json.dumps({"locked": False, "error":
                                "need booking_token, origin, destination, "
                                "flight_date"})
+        try:
+            date = validate_flight_date(flight_date)
+        except DateError as e:
+            return json.dumps({"locked": False,
+                                "error": f"bad date: {e}"})
+        try:
+            n_adults = validate_adults(adults)
+        except DateError as e:
+            return json.dumps({"locked": False, "error": str(e)})
         if not name:
             return json.dumps({"locked": False, "error":
                                "need the passenger's full name for "
@@ -383,7 +428,7 @@ def build_tools(db: Session, phone: str) -> list:
         sky = Travels247Client()
         try:
             priced = _run_async(_verify_and_close(
-                sky, booking_token, max(adults, 1)))
+                sky, booking_token, n_adults))
         except Exception as e:
             return json.dumps({"locked": False,
                                "error": f"live price check failed: {e}"})
@@ -404,7 +449,7 @@ def build_tools(db: Session, phone: str) -> list:
         details = dict(session.flight_details or {})
         details.update({
             "booking_token": priced["booking_token"],
-            "passengers": {"adults": max(adults, 1), "children": 0,
+            "passengers": {"adults": n_adults, "children": 0,
                            "infants": 0},
             "travellers": travellers})
         session.flight_details = details
@@ -413,19 +458,28 @@ def build_tools(db: Session, phone: str) -> list:
         return json.dumps({
             "locked": True, "payment_link": result["payment_link"],
             "total_amount": total, "payment_ref": session.payment_ref,
-            "summary": (f"Locked {o}->{d} {date} at NGN {total:,.0f}. "
-                        f"Pay within 10 minutes: {result['payment_link']}")})
+            "summary": (f"Held {o}->{d} {date} at NGN {total:,.0f} - "
+                        f"our total, good for 10 minutes (the airline "
+                        f"holds no seats for us). "
+                        f"Pay here: {result['payment_link']}")})
 
     def subscribe_alerts(origin: str, destination: str,
                          target_price: float = None,
                          flight_date: str = "") -> str:
         from FareBeep.alerts import SubscriptionMonitor, target_realism_note
+        from FareBeep.dates import DateError, validate_flight_date
         o = resolve_iata(origin or "")
         d = resolve_iata(destination or "")
-        date = (flight_date or "")[:10] or None
         if not o or not d:
             return json.dumps({"subscribed": False, "error":
                                "need origin and destination"})
+        date = None
+        if (flight_date or "").strip():
+            try:
+                date = validate_flight_date(flight_date)
+            except DateError as e:
+                return json.dumps({"subscribed": False,
+                                   "error": f"bad date: {e}"})
         user = db.query(User).filter(User.phone == phone).first()
         if user is None:
             return json.dumps({"subscribed": False,
@@ -546,7 +600,7 @@ def build_tools(db: Session, phone: str) -> list:
             args_schema=_SearchArgs),
         StructuredTool.from_function(
             func=reserve_fare, name="reserve_fare",
-            description=("Lock a presented offer for 10 minutes and get the "
+            description=("Hold our quoted total for 10 minutes and get the "
                          "Paystack link. Call ONLY on yes/book/pay, with the "
                          "LATEST booking_token and the passenger's name."),
             args_schema=_ReserveArgs),

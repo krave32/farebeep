@@ -247,6 +247,13 @@ class ProcessedMessage(Base):
     payload = Column(JSON, nullable=True)           # inbound snapshot for
                                                     # crash recovery (see
                                                     # recover_orphaned_inbound)
+    # Ownership lease: WHO may dispatch this row and UNTIL WHEN. A worker
+    # dispatches only rows it atomically leased (single UPDATE ... WHERE
+    # lease free-or-expired ... RETURNING - see acquire_queued_messages),
+    # so web batches, the startup sweep and the periodic sweep can never
+    # take the same row concurrently - across threads AND processes.
+    lease_owner = Column(String, nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
     processed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
 

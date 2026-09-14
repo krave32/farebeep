@@ -557,6 +557,7 @@ class LedgerSearch:
             "flight_date": str(row.flight_date)[:10],
             "verify_link": row.verify_link,
             "source": "ledger",
+            "checked_at": _iso_instant(row.last_updated),
             "above_guardrail": row.price > self.price_guardrail,
         }
 
@@ -727,6 +728,10 @@ class LedgerSearch:
                     "flight_date": date_str,
                     "verify_link": cached.verify_link,
                     "source": "ledger",
+                    # ISO instant the fare was last checked (drives the
+                    # "cached ~N min ago" label - never present a ledger
+                    # fare as freshly checked).
+                    "checked_at": _iso_instant(cached.last_updated),
                     "above_guardrail": cached.price > self.price_guardrail,
                 }
 
@@ -742,6 +747,7 @@ class LedgerSearch:
         result = self._verify_and_upsert(o, d, date_str, result,
                                          verify=verify)
         return {**result, "flight_date": date_str, "source": "serpapi",
+                "checked_at": _iso_instant(self.clock()),
                 "above_guardrail": result["price"] > self.price_guardrail}
 
     def search_list(self, origin, destination, flight_date,
@@ -769,8 +775,13 @@ class LedgerSearch:
             return [], []
         sane = [f for f in fares if f["price"] <= self.price_guardrail]
         surge = [f for f in fares if f["price"] > self.price_guardrail]
+        checked_at = _iso_instant(self.clock())
         for f in sane:
             f["flight_date"] = date_str
+            # Live-fetched seconds ago (the ledger caches one price, not
+            # lists): stamp it so replies can say "checked just now".
+            f.setdefault("checked_at", checked_at)
+            f.setdefault("source", "live")
         if sane:
             best = sane[0]
             try:
@@ -791,11 +802,64 @@ def _is_postgres(db) -> bool:
 
 def _as_date_str(flight_date) -> str:
     """Accept a datetime, date, or "YYYY-MM-DD"; return "YYYY-MM-DD".
-    A missing date (user didn't say when) defaults to today - never crash."""
+    A missing date (user didn't say when) defaults to today in
+    Africa/Lagos - never crash, never silently UTC."""
     if flight_date in (None, ""):
-        return datetime.utcnow().strftime("%Y-%m-%d")
+        from FareBeep.dates import lagos_today
+        return lagos_today().isoformat()
     if isinstance(flight_date, str):
         return flight_date[:10]
     if isinstance(flight_date, datetime):
         return flight_date.strftime("%Y-%m-%d")
     return flight_date.strftime("%Y-%m-%d")  # datetime.date
+
+
+def _iso_instant(value) -> Optional[str]:
+    """Storage datetimes (naive UTC on SQLite, aware on Postgres) and
+    live clock readings -> ISO strings. Fare dicts travel through JSON
+    (chat_state, tool results), so datetimes must never ride along raw."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        return value.isoformat()
+    except Exception:
+        return None
+
+
+def _checked_age_minutes(checked_at, now=None) -> Optional[int]:
+    """Whole minutes since checked_at (ISO string or datetime). None when
+    unknown/unparseable - callers then claim nothing about freshness."""
+    if not checked_at:
+        return None
+    try:
+        from datetime import timezone
+        ts = (datetime.fromisoformat(str(checked_at))
+              if isinstance(checked_at, str) else checked_at)
+        ref = now or datetime.now(timezone.utc).replace(tzinfo=None)
+        if (ts.tzinfo is None) != (ref.tzinfo is None):
+            # Storage is naive UTC, Postgres reads aware: normalize to
+            # naive (both sides are UTC by convention).
+            ts = ts.replace(tzinfo=None)
+            ref = ref.replace(tzinfo=None)
+        return max(0, int((ref - ts).total_seconds() // 60))
+    except Exception:
+        return None
+
+
+def fare_freshness(fare: dict, now=None) -> str:
+    """One-line honesty label for a quoted fare. Live engine results say
+    "checked just now"; ledger rows say "cached ~N min ago" from their
+    checked_at; anything without provenance says "" (claim nothing)."""
+    src = ((fare or {}).get("source") or "")
+    if src in ("serpapi", "247travels", "live"):
+        return "checked just now"
+    if src == "ledger":
+        mins = _checked_age_minutes((fare or {}).get("checked_at"), now)
+        if mins is None:
+            return "cached fare"
+        if mins < 1:
+            return "checked just now"
+        return f"cached ~{mins} min ago"
+    return ""

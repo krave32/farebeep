@@ -247,6 +247,8 @@ def _apply_additive_migrations() -> None:
         ("processed_messages", "attempts", "INTEGER DEFAULT 0"),
         ("processed_messages", "last_error", "TEXT"),
         ("processed_messages", "payload", "JSONB"),
+        ("processed_messages", "lease_owner", "TEXT"),
+        ("processed_messages", "lease_expires_at", "TIMESTAMPTZ"),
     ]
     engine = get_engine()
     with engine.begin() as conn:

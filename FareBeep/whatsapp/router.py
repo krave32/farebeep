@@ -51,21 +51,22 @@ def _parse(msg: dict) -> InboundMessage | None:
         timestamp=msg.get("timestamp", ""),
         raw=msg,
     )
-    t = msg.get("type", "")
-    if t == "text":
+    t = msg.get("type", "") or ""
+    if t == "text" or (not t and isinstance(msg.get("text"), dict)
+                       and "body" in msg["text"]):
         base.message_type = MessageType.TEXT
         base.text = msg.get("text", {}).get("body", "").strip()
         return base
-    if t == "interactive":
-        inter = msg.get("interactive", {})
+    inter = msg.get("interactive", {})
+    if t == "interactive" or (not t and isinstance(inter, dict) and inter):
         it = inter.get("type", "")
-        if it == "button_reply":
+        if it == "button_reply" or (not it and "button_reply" in inter):
             r = inter.get("button_reply", {})
             base.message_type = MessageType.BUTTON_REPLY
             base.button_id = r.get("id", "")
             base.button_title = r.get("title", "")
             return base
-        if it == "list_reply":
+        if it == "list_reply" or (not it and "list_reply" in inter):
             r = inter.get("list_reply", {})
             base.message_type = MessageType.LIST_REPLY
             base.list_id = r.get("id", "")

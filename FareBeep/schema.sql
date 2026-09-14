@@ -174,6 +174,8 @@ create table if not exists processed_messages (
     attempts     integer not null default 0,    -- background tries so far
     last_error   text,                          -- last failure (truncated)
     payload      jsonb,                         -- inbound snapshot (recovery)
+    lease_owner  text,                          -- dispatch owner (web/sweep)
+    lease_expires_at timestamptz,               -- lease deadline (ownership)
     processed_at timestamptz,
     created_at   timestamptz not null default now()
 );

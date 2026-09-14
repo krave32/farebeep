@@ -36,6 +36,7 @@ def client(monkeypatch, session_factory):
     monkeypatch.setattr(main, "SessionLocal", session_factory)
     # keep tests hermetic: no live Gemini calls from the background handler
     monkeypatch.setattr(main.brain, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)  # no live agent
     return TestClient(main.app)
 
 

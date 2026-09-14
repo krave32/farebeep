@@ -148,6 +148,80 @@ def _verify_meta_signature(raw_body: bytes, signature_header: str) -> bool:
 
 MAX_INBOUND_ATTEMPTS = 3
 
+# Ownership lease: a worker dispatches ONLY rows it holds a live lease
+# on. Web batches, the startup sweep and the periodic sweep all take
+# rows through acquire_queued_messages (one atomic UPDATE ... WHERE the
+# lease is free-or-expired ... RETURNING), so two workers - threads in
+# this process or separate processes/replicas - can never hold the same
+# row at once. The sweep additionally requires row AGE, the lease
+# requires OWNERSHIP: a slow-but-live turn holds its lease, so recovery
+# can never steal it no matter how long it runs.
+LEASE_SECONDS = 600
+
+
+def _lease_owner(prefix: str) -> str:
+    """Ops-visible lease holder id: role + pid + thread + random."""
+    return (f"{prefix}:{os.getpid()}:{threading.get_ident()}:"
+            f"{uuid.uuid4().hex[:8]}")
+
+
+def acquire_queued_messages(owner: str, phone: str = None,
+                            stale_minutes: int = 0,
+                            lease_seconds: int = LEASE_SECONDS,
+                            limit: int = None) -> list:
+    """Atomically lease queued rows. ONE UPDATE statement takes every
+    matching row whose lease is free (NULL) or expired and stamps it
+    with (owner, deadline) - the database serializes concurrent
+    acquirers, so the returned sets are always disjoint. Returns
+    [{message_id, payload, created_at, phone}]. Never raises (empty on
+    DB error - a missed sweep is safer than a crashed webhook)."""
+    from datetime import timedelta
+    from sqlalchemy import and_, or_, update
+    now = utcnow()
+    conds = [
+        ProcessedMessage.status == "queued",
+        or_(ProcessedMessage.lease_expires_at.is_(None),
+            ProcessedMessage.lease_expires_at < now),
+    ]
+    if phone is not None:
+        conds.append(ProcessedMessage.phone == phone)
+    if stale_minutes:
+        conds.append(ProcessedMessage.created_at
+                     < now - timedelta(minutes=stale_minutes))
+    if limit:
+        # Oldest claims first (bounds one batch without starving old
+        # rows). Portable form: Postgres has no UPDATE..ORDER BY..LIMIT,
+        # so cap via a subselect both engines accept.
+        from sqlalchemy import select
+        conds.append(ProcessedMessage.message_id.in_(
+            select(ProcessedMessage.message_id)
+            .where(and_(*conds))
+            .order_by(ProcessedMessage.created_at)
+            .limit(limit)
+            .scalar_subquery()))
+    stmt = (update(ProcessedMessage).where(and_(*conds))
+            .values(lease_owner=owner,
+                    lease_expires_at=now + timedelta(seconds=lease_seconds))
+            .returning(ProcessedMessage.message_id,
+                       ProcessedMessage.payload,
+                       ProcessedMessage.created_at,
+                       ProcessedMessage.phone))
+    db = SessionLocal()
+    try:
+        rows = db.execute(stmt).all()
+        db.commit()
+        return [{"message_id": r[0], "payload": r[1],
+                 "created_at": r[2], "phone": r[3]} for r in rows]
+    except Exception as e:
+        logger.warning("Lease acquire failed (%s): %s", owner, e)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return []
+    finally:
+        db.close()
+
 
 def _snapshot_message(m) -> dict:
     """JSON-safe snapshot of a classified message, stored at claim time so
@@ -216,36 +290,65 @@ def recover_orphaned_inbound(db=None, stale_minutes: int = 0) -> int:
     stale ones are parked as exhausted/failed with an explicit error
     instead of cycling. Returns the count re-dispatched. Never raises.
     """
-    from datetime import timedelta
     own = db is None
+    db = db or SessionLocal()
     try:
-        db = db or SessionLocal()
-        query = (db.query(ProcessedMessage)
-                 .filter(ProcessedMessage.status == "queued")
-                 .order_by(ProcessedMessage.created_at))
-        if stale_minutes:
-            cutoff = utcnow() - timedelta(minutes=stale_minutes)
-            query = query.filter(ProcessedMessage.created_at < cutoff)
-        rows = query.all()
-        replayable = [r for r in rows
-                      if (r.payload or {}).get("message_id")]
-        for r in rows:
-            if not (r.payload or {}).get("message_id"):
-                # Pre-recovery row: unreplayable. Park it exhausted so
-                # neither the sweep nor a redelivery retries it forever.
-                r.status = "failed"
-                r.attempts = MAX_INBOUND_ATTEMPTS
-                r.last_error = ("no stored payload (claimed before crash "
+        # Lease, don't just read: rows whose lease is live belong to a
+        # running worker (possibly on another thread/process) and are
+        # NOT orphans, however old they look. Only free-or-expired rows
+        # are taken - atomically, so a concurrent batch and sweep split
+        # the work instead of doubling it.
+        taken = acquire_queued_messages(
+            _lease_owner("sweep" if stale_minutes else "startup"),
+            stale_minutes=stale_minutes)
+        legacy = [t for t in taken
+                  if not (t["payload"] or {}).get("message_id")]
+        if legacy:
+            db.query(ProcessedMessage).filter(
+                ProcessedMessage.message_id.in_(
+                    [t["message_id"] for t in legacy])).update(
+                {"status": "failed",
+                 "attempts": MAX_INBOUND_ATTEMPTS,
+                 "last_error": ("no stored payload (claimed before crash "
                                 "recovery shipped) - ask the customer to "
-                                "resend")
-                r.processed_at = utcnow()
-        db.commit()
+                                "resend"),
+                 "processed_at": utcnow(),
+                 "lease_owner": None,
+                 "lease_expires_at": None},
+                synchronize_session=False)
+            db.commit()
+        replayable = [t for t in taken
+                      if (t["payload"] or {}).get("message_id")]
         if not replayable:
             return 0
         logger.warning("Recovery: re-dispatching %d orphaned inbound "
                        "message(s)", len(replayable))
-        _process_inbound_batch([_restore_message(r.payload)
-                                for r in replayable])
+        grouped: dict = {}
+        order: list = []
+        for t in replayable:
+            snap = t["payload"] or {}
+            phone = snap.get("from_number") or t["phone"] or ""
+            if not phone:
+                continue
+            if phone not in grouped:
+                grouped[phone] = []
+                order.append(phone)
+            grouped[phone].append(t)
+        for phone in order:
+            with _phone_lock(phone):
+                batch = sorted(
+                    grouped[phone],
+                    key=lambda t: _arrival_key(t["payload"], t["created_at"]))
+                for t in batch:
+                    m = _restore_message(t["payload"])
+                    try:
+                        _dispatch_single(m)
+                        _mark_processed(m.message_id, "done")
+                    except Exception as e:
+                        logger.error("Recovery handling failed (%s): %s",
+                                     phone, e)
+                        _mark_processed(m.message_id, "failed",
+                                        error=str(e))
         return len(replayable)
     except Exception as e:
         logger.error("Recovery sweep failed (orphans stay queued): %s", e)
@@ -358,6 +461,8 @@ def _claim_inbound_messages(messages: list) -> list:
                 if (row is not None and row.status == "failed"
                         and (row.attempts or 0) < MAX_INBOUND_ATTEMPTS):
                     row.status = "queued"
+                    row.lease_owner = None     # next acquirer leases it
+                    row.lease_expires_at = None
                     db.commit()
                     claimed.append(m)
                     logger.info("Reclaim: retrying failed wamid %s "
@@ -384,6 +489,8 @@ def _mark_processed(message_id: str, status: str, error: str = None) -> None:
             message_id=message_id).first()
         if row is not None:
             row.status = status
+            row.lease_owner = None       # release ownership with the outcome
+            row.lease_expires_at = None
             if status == "failed":
                 row.attempts = (row.attempts or 0) + 1
                 if error:
@@ -450,18 +557,19 @@ def _dispatch_single(msg) -> None:
                 msg.message_type, phone)
 
 
-def _arrival_key(row) -> tuple:
+def _arrival_key(payload: dict, created) -> tuple:
     """Sort key for one customer's queued rows: sender timestamp first,
     claim time second. Timestamp = the order the human typed them (Meta
     can deliver one payload wire-shuffled); created_at = our arrival
-    record, which orders separate requests and breaks timestamp ties."""
-    snap = row.payload or {}
+    record, which orders separate requests and breaks timestamp ties.
+    NOTE the limit this implies: only ARRIVED (claimed) messages can be
+    ordered - a message Meta hasn't delivered yet cannot be sequenced,
+    so a late arrival with an early timestamp still runs late."""
     try:
-        ts = int(str(snap.get("timestamp") or ""))
+        ts = int(str((payload or {}).get("timestamp") or ""))
         has_ts = 0
     except (ValueError, TypeError):
         ts, has_ts = 0, 1
-    created = getattr(row, "created_at", None)
     created_key = (created.isoformat() if hasattr(created, "isoformat")
                    else str(created or ""))
     return (has_ts, ts, created_key)
@@ -495,22 +603,16 @@ def _process_inbound_batch(messages: list) -> None:
             order.append(phone)
         grouped[phone].append(m)
     for phone in order:
-        # One phone's turns never interleave with another batch for the
-        # same phone (concurrent webhook POSTs, recovery vs live) - the
-        # lock is per phone, so different customers still run parallel.
+        # Per-phone lock (this process) + atomic lease (every process):
+        # two batches for one customer can neither interleave nor take
+        # each other's rows. Different customers still run parallel.
         with _phone_lock(phone):
-            db = SessionLocal()
-            try:
-                rows = (db.query(ProcessedMessage)
-                        .filter(ProcessedMessage.status == "queued",
-                                ProcessedMessage.phone == phone)
-                        .order_by(ProcessedMessage.created_at).all())
-                rows = sorted(rows, key=_arrival_key)
-            finally:
-                db.close()
+            taken = acquire_queued_messages(_lease_owner("web"), phone=phone)
             work = []
-            for r in rows:
-                snap = r.payload or {}
+            for t in sorted(taken,
+                            key=lambda t: _arrival_key(t["payload"],
+                                                       t["created_at"])):
+                snap = t["payload"] or {}
                 if snap.get("message_id"):
                     work.append(_restore_message(snap))
                 # Payload-less rows are the sweep's job (parked, not
@@ -888,6 +990,20 @@ def _handle_incoming_message(phone: str, text: str) -> None:
             if _fill_pending_fare(db, user, text):
                 return
 
+            # DATE CONFIRMATION answer ("5 June" after "did you mean 5
+            # June or 6 May?"): the pending route is complete, only the
+            # date was missing - fill it and search. A city mention or
+            # an ambiguous answer falls through for fresh handling.
+            if _fill_pending_date(db, user, text):
+                return
+
+            # AMBIGUOUS DATE GUARD (before the agent, like STOP/MANAGE):
+            # "05/06" reads two ways and must never reach search, booking
+            # - or the agent's tools - as a guessed date. Parsed locally
+            # (free, deterministic) so online/offline behave identically.
+            if _try_date_confirm(db, user, text):
+                return
+
             # GROQ AGENT: when configured (and not in guided mode), the
             # LangChain agent owns the turn end-to-end (tools included)
             # and its reply goes out verbatim. On ANY agent failure
@@ -927,7 +1043,9 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                 logger.info("Captured name %s for %s", intent.name, phone)
 
             if intent.intent == "fare":
-                if intent.has_route:
+                if intent.has_route and _needs_date_confirm(intent):
+                    _ask_date_confirm(db, user, intent)
+                elif intent.has_route:
                     chatstate.clear_pending_fare(db, user.phone)  # superseded by a full route
                     _reply_fare(db, user, intent)
                 elif intent.destination_iata and intent.date and not intent.origin_iata:
@@ -949,7 +1067,10 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                 # live in the per-chat context (chat_state), so a bare "BOOK"
                 # books exactly what was quoted - never silently today.
                 if intent.has_route or chatstate.get_last_fare(db, user.phone) is not None:
-                    _reply_booking(db, user, intent)
+                    if intent.has_route and _needs_date_confirm(intent):
+                        _ask_date_confirm(db, user, intent)
+                    else:
+                        _reply_booking(db, user, intent)
                 elif intent.is_partial:
                     _ask_missing_info(db, user, intent)
                 else:
@@ -959,7 +1080,10 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                          "fare quote I sent you.",
                          user.name)
             elif intent.intent == "subscribe":
-                _reply_subscribe(db, user, intent)
+                if intent.has_route and _needs_date_confirm(intent):
+                    _ask_date_confirm(db, user, intent)
+                else:
+                    _reply_subscribe(db, user, intent)
             elif intent.intent == "unsubscribe":
                 if _looks_negated(text):
                     # "don't cancel my alerts" parsed as unsubscribe: the
@@ -1088,6 +1212,78 @@ def _fill_pending_fare(db, user: User, text: str) -> bool:
                 origin_iata, destination_iata, date_, text)
     _reply_fare(db, user, intent)
     return True
+
+
+def _fill_pending_date(db, user: User, text: str) -> bool:
+    """Mirror of _fill_pending_fare for the date slot: we asked 'did you
+    mean X or Y?' and the user answered with a plain date. Fill it and
+    run the search. Returns True when handled. Declines when the pending
+    route is incomplete, when the text names a city (a fresh request for
+    the brain), when no date parses, or when the answer is itself
+    ambiguous (falls through so the confirm gate re-asks - the loop can
+    never book a guessed date)."""
+    pending = chatstate.get_pending_fare(db, user.phone)
+    if not pending:
+        return False
+    origin_iata = pending.get("origin_iata")
+    destination_iata = pending.get("destination_iata")
+    if not (origin_iata and destination_iata) or pending.get("date"):
+        return False
+    if brain._local_route(text):
+        return False
+    day = brain._local_date(text)
+    if not day:
+        return False
+    from FareBeep.dates import ambiguous_date_hint
+    if ambiguous_date_hint(text) is not None:
+        return False
+    chatstate.clear_pending_fare(db, user.phone)
+    intent = brain.Intent(intent="fare",
+                          origin=city_name(origin_iata),
+                          destination=city_name(destination_iata),
+                          date=day)
+    logger.info("Filled pending date: %s -> %s on %s (from '%s')",
+                origin_iata, destination_iata, day, text)
+    _reply_fare(db, user, intent)
+    return True
+
+
+def _try_date_confirm(db, user: User, text: str) -> bool:
+    """Pre-agent ambiguous-date guard: locally parse this turn (no AI
+    cost); when it names a complete route with a two-way date, ask which
+    reading and stop - the agent's tools never see the guess. Returns
+    True when handled."""
+    try:
+        intent = brain.parse_intent(text, force_local=True)
+    except Exception:
+        return False
+    if intent is None or intent.intent not in ("fare", "book", "subscribe"):
+        return False
+    if not intent.has_route or not _needs_date_confirm(intent):
+        return False
+    _ask_date_confirm(db, user, intent)
+    return True
+
+
+def _ask_date_confirm(db, user: User, intent: brain.Intent) -> None:
+    """Ambiguous date text on a complete route: remember the route
+    (dateless pending) and ask which reading - never search or book a
+    guessed date. The plain-date answer completes via _fill_pending_date."""
+    chatstate.set_pending_fare(db, user.phone, {
+        "origin_iata": intent.origin_iata,
+        "destination_iata": intent.destination_iata,
+        "date": None,
+    })
+    _say(user.phone,
+         f"{intent.date_hint} Reply with the date plainly, e.g. '5 June'.",
+         user.name)
+
+
+def _needs_date_confirm(intent: brain.Intent) -> bool:
+    """True when the turn carries an unresolved date ambiguity: the date
+    slot is empty BECAUSE the text read two ways (not because no date
+    was given). Money-adjacent branches gate on this before acting."""
+    return bool(intent.date_hint and not intent.date)
 
 
 def _ask_missing_info(db, user: User, intent: brain.Intent) -> None:
@@ -1240,10 +1436,11 @@ def _reply_fare(db, user: User, intent: brain.Intent) -> None:
         _say(user.phone,
              f"Fare {city_name(origin_iata)} -> "
              f"{city_name(intent.destination_iata)} {fare['flight_date']}:\n"
-             f"₦{fare['price']:,.0f} via {fare['airline']} (live)\n"
+             f"₦{fare['price']:,.0f} via {fare['airline']} "
+             f"({_fresh_label(fare)})\n"
              f"Verify: {fare['verify_link']}\n"
-             f"Reply BOOK to buy at ₦{_booking_total(fare['price']):,.0f} "
-             f"(Paystack), or TRACK to get a Beep when it drops.",
+             f"Reply BOOK - I'll re-confirm the live price before you "
+             f"pay - or TRACK to get a Beep when it drops.",
              user.name)
         _send_fare_cards(user, [fare], origin_iata, intent.destination_iata)
         return
@@ -1266,6 +1463,13 @@ def _reply_fare(db, user: User, intent: brain.Intent) -> None:
     _send_fare_cards(user, fares, origin_iata, intent.destination_iata)
 
 
+def _fresh_label(fare: dict) -> str:
+    """'checked just now' for live results, 'cached ~N min ago' for
+    ledger rows - so a quoted fare never reads fresher than it is."""
+    from FareBeep.search import fare_freshness
+    return fare_freshness(fare) or "price shown as found"
+
+
 def _booking_total(airline_price: float) -> float:
     from FareBeep.payments import calculate_final_price
     return calculate_final_price(airline_price)["total_amount"]
@@ -1279,8 +1483,9 @@ def _reply_booking(db, user: User, intent: brain.Intent,
        LIVE so the seat exists at the quoted price right now.
     2. Session: a booking_session row is saved with expires_at = now +
        13m by default (10m once the payment method is card).
-    3. The WhatsApp/TG call: the Paystack TEST link + the "Price Locked"
-       message, with the 10-minute expiry stated up front.
+    3. The WhatsApp/TG call: the Paystack TEST link + the held-total
+    message (our 10-minute hold, never a supplier fare lock), with the
+    10-minute expiry stated up front.
 
     picked_fare: when set, the user picked "1, 2 or 3" from a ranked list -
     the route/date come from the list context and the SELECTED flight is
@@ -1384,7 +1589,7 @@ def _reply_booking(db, user: User, intent: brain.Intent,
         _say(user.phone,
              f"The fare moved from ₦{expected_price:,.0f} to "
              f"₦{fare['price']:,.0f} while you were deciding - the airline "
-             f"repriced it. Still lock it at the new price? Reply YES or "
+             f"repriced it. Still go ahead at the new price? Reply YES or "
              f"BOOK - or NO to cancel.",
              user.name)
         return
@@ -1402,7 +1607,7 @@ def _reply_booking(db, user: User, intent: brain.Intent,
 def _create_and_send_booking(db, user: User, origin_iata: str,
                              destination_iata: str, flight_date: str,
                              fare: dict, flight_iata: str = None) -> None:
-    """Create the 10-minute booking session and send the price-locked
+    """Create the 10-minute booking session and send the held-total
     message with the confirmation-page link. Shared by the direct BOOK flow
     and the re-quoted "yes" flow."""
     bookings = BookingService(db)
@@ -1428,9 +1633,12 @@ def _create_and_send_booking(db, user: User, origin_iata: str,
     # redirecting to payment. Every booking flows through this page.
     book_url = f"{APP_BASE_URL}/book/{session.id}"
     _say(user.phone,
-         f"🔒 PRICE LOCKED for 10 minutes.\n"
+         f"🔒 Total held for 10 minutes - our promise, not the airline's: "
+         f"no supplier holds seats for us, so if the fare moves again "
+         f"before you pay, tell us and we'll make it right.\n"
          f"{origin} -> {destination} on {flight_date}\n"
-         f"Airline price: ₦{fare['price']:,.0f}\n"
+         f"Airline price (re-checked live just now): "
+         f"₦{fare['price']:,.0f}\n"
          f"Markup + fees: ₦{session.markup + session.processing_fee:,.0f}\n"
          f"TOTAL:         ₦{result['total_amount']:,.0f}\n\n"
          f"Confirm & pay here (valid until {expires} today):\n"

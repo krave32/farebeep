@@ -375,7 +375,8 @@ class SubscriptionMonitor:
         airline = f" via {fare['airline']}" if fare.get("airline") else ""
         link = f"\nVerify: {fare['verify_link']}" if fare.get("verify_link") else ""
         body = (f"📉 FARE BEEP\n{line}{airline}\n"
-                f"Reply BOOK to buy at this price.{link}")
+                f"Reply BOOK and I'll re-check it live before you pay."
+                f"{link}")
 
         sent = self._deliver_beep(user, sub, body, price)
         if sent:

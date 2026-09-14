@@ -30,6 +30,7 @@ def session_factory():
 def client(monkeypatch, session_factory):
     monkeypatch.setattr(main, "SessionLocal", session_factory)
     monkeypatch.setattr(main.brain, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)  # deterministic path
     monkeypatch.setattr(main, "ELEVENLABS_TOOL_SECRET", None)
     monkeypatch.setattr(
         transactions, "initialize_paystack_payment",

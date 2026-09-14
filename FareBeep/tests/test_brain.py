@@ -6,6 +6,7 @@ import httpx
 
 from FareBeep import brain
 from FareBeep.brain import Intent
+from FareBeep.dates import lagos_today
 
 
 def test_local_parser_resolves_route_without_gemini(monkeypatch):
@@ -19,14 +20,14 @@ def test_local_parser_resolves_route_without_gemini(monkeypatch):
     assert intent.intent == "fare"
     assert intent.origin_iata == "LOS"
     assert intent.destination_iata == "ABV"
-    assert intent.date == (date.today() + timedelta(days=1)).isoformat()
+    assert intent.date == (lagos_today() + timedelta(days=1)).isoformat()
 
 
 def test_local_parser_next_week_weekday_is_the_following_week():
     """'next week thursday' = the Thursday of the NEXT calendar week (Mon-Sun
     after the current one): delta = (7 - today.weekday()) + 3. On a Saturday
     that is 5 days, NOT 12 (the week after next)."""
-    today = date.today()
+    today = lagos_today()
     expected = today + timedelta(days=(7 - today.weekday()) + 3)
     assert brain._local_date("next week thursday") == expected.isoformat()
     intent = brain._local_parse("i am going to lagos on next week thursday")
@@ -39,7 +40,7 @@ def test_local_parser_next_week_weekday_is_the_following_week():
 def test_local_parser_bare_ordinal_day_future_this_month():
     """User asks for 'the 31st' (no month) -> the next upcoming 31st
     after today (rolls months/years as needed)."""
-    today = date.today()
+    today = lagos_today()
     year, month = today.year, today.month
     while True:
         try:
@@ -57,7 +58,7 @@ def test_local_parser_bare_ordinal_day_future_this_month():
 
 def test_local_parser_bare_ordinal_day_past_rolls_to_next_month():
     """'the 5th' on Aug 13 is past -> same day next month (Sep 5)."""
-    today = date.today()
+    today = lagos_today()
     if today.day < 5:
         expected = date(today.year, today.month, 5)
     else:
@@ -69,7 +70,7 @@ def test_local_parser_bare_ordinal_day_past_rolls_to_next_month():
 
 def test_local_parser_bare_number_is_current_month_day():
     """A PLAIN number with no suffix: '31' = the 31st of the CURRENT month."""
-    today = date.today()
+    today = lagos_today()
     try:
         expected = date(today.year, today.month, 31)
     except ValueError:
@@ -84,7 +85,7 @@ def test_local_parser_bare_number_is_current_month_day():
 
 def test_local_parser_bare_number_past_rolls_to_next_month():
     """'5' on Aug 13 is past -> same day next month."""
-    today = date.today()
+    today = lagos_today()
     if today.day < 5:
         expected = date(today.year, today.month, 5)
     else:
@@ -97,7 +98,7 @@ def test_local_parser_bare_number_past_rolls_to_next_month():
 
 def test_local_parser_slash_date_day_month():
     """'31/08' and '31-08' = 31 August (Nigerian day/month order)."""
-    today = date.today()
+    today = lagos_today()
     try:
         expected = date(today.year, 8, 31)
         if expected < today:
@@ -112,7 +113,7 @@ def test_local_parser_slash_date_day_month():
 
 def test_local_parser_slash_date_us_order():
     """'08/31' (US order) must still resolve to 31 August."""
-    today = date.today()
+    today = lagos_today()
     try:
         expected = date(today.year, 8, 31)
         if expected < today:
@@ -125,7 +126,7 @@ def test_local_parser_slash_date_us_order():
 
 def test_local_parser_times_and_prices_are_not_dates():
     """'10am', '10:30' and '80k' must never be read as a day."""
-    today = date.today()
+    today = lagos_today()
     intent = brain._local_parse(
         f"fare lagos to abuja tomorrow at 10am")
     assert intent.date == (today + timedelta(days=1)).isoformat()
@@ -138,7 +139,7 @@ def test_local_parser_times_and_prices_are_not_dates():
 
 def test_local_parser_month_plus_day_still_wins():
     """'31st August' -> Aug 31 (year rolls only if that date is already past)."""
-    today = date.today()
+    today = lagos_today()
     try:
         expected = date(today.year, 8, 31)
         if expected < today:
@@ -320,7 +321,7 @@ def test_prompt_defines_fare_and_decision_order():
 def test_local_parser_weekday_date_next_tuesday():
     from datetime import date, timedelta
     intent = brain._local_parse("find me a flight to abj for next tuesday")
-    expected = (date.today() + timedelta(days=(7 - date.today().weekday()) + 1)
+    expected = (lagos_today() + timedelta(days=(7 - lagos_today().weekday()) + 1)
                 ).isoformat()
     assert intent.date == expected
 
@@ -328,8 +329,8 @@ def test_local_parser_weekday_date_next_tuesday():
 def test_local_parser_weekday_date_this_friday():
     from datetime import date, timedelta
     intent = brain._local_parse("abuja to lagos this friday")
-    target = (4 - date.today().weekday()) % 7
-    expected = (date.today() + timedelta(days=7 if target == 0 else target)).isoformat()
+    target = (4 - lagos_today().weekday()) % 7
+    expected = (lagos_today() + timedelta(days=7 if target == 0 else target)).isoformat()
     assert intent.date == expected
 
 

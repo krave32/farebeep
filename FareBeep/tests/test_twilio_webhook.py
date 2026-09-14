@@ -31,6 +31,7 @@ def client(monkeypatch, session_factory):
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "test-twilio-token")
     monkeypatch.setattr(main, "SessionLocal", session_factory)
     monkeypatch.setattr(main.brain, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(main, "GROQ_API_KEY", None)  # deterministic path
 
     class FakeNotifier:
         def __init__(self):

@@ -383,6 +383,116 @@ def test_live_path_bypasses_whatsapp_handlers(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Atomic lease - concurrent acquirers split rows, never share them
+# ---------------------------------------------------------------------------
+def test_concurrent_acquires_are_disjoint(client, monkeypatch, tmp_path):
+    """Two workers racing acquire_queued_messages get disjoint id sets
+    whose union is complete - the single UPDATE is the serialization
+    point (threads here, processes/replicas in production). Uses a FILE
+    database (not the shared in-memory one): threads hold separate
+    connections, so the race is decided by real storage locking, the
+    way Postgres row locking decides it live."""
+    from sqlalchemy.pool import NullPool
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/race.db",
+        connect_args={"check_same_thread": False, "timeout": 30},
+        poolclass=NullPool,
+    )
+    Base.metadata.create_all(engine)
+    file_factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(main, "SessionLocal", file_factory)
+
+    raws = [{"id": f"w-race-{i}", "from": "+234801",
+             "timestamp": str(i), "type": "text",
+             "text": {"body": f"m{i}"}} for i in range(20)]
+    batch = main._classify_all_entries(
+        {"entry": [{"changes": [{"value": {"messages": raws}}]}]})
+    assert len(main._claim_inbound_messages(batch)) == 20
+
+    results = {}
+    barrier = threading.Barrier(2)
+
+    def _grab(name, cap):
+        barrier.wait(timeout=30)
+        taken = main.acquire_queued_messages(
+            f"test-{name}", phone="+234801", limit=cap)
+        results[name] = sorted(t["message_id"] for t in taken)
+
+    # Overlapping caps force a real split: w1 may take up to 12, w2 the
+    # rest. Either order of arrival still yields disjoint, complete sets.
+    t1 = threading.Thread(target=_grab, args=("w1", 12))
+    t2 = threading.Thread(target=_grab, args=("w2", 12))
+    t1.start()
+    t2.start()
+    t1.join(timeout=60)
+    t2.join(timeout=60)
+    assert not t1.is_alive() and not t2.is_alive()
+    assert set(results["w1"]).isdisjoint(results["w2"])
+    assert sorted(results["w1"] + results["w2"]) == sorted(
+        f"w-race-{i}" for i in range(20))
+    # Ownership is visible on the rows.
+    db = file_factory()
+    try:
+        owners = {r.lease_owner for r in
+                  db.query(ProcessedMessage).all()}
+    finally:
+        db.close()
+        engine.dispose()
+    assert owners <= {"test-w1", "test-w2"} and len(owners) == 2
+
+
+def test_sweep_cannot_steal_live_lease(client, monkeypatch,
+                                       session_factory):
+    """P3: a slow live turn holds its lease while the sweep runs past -
+    the sweep takes nothing and the turn completes exactly once. Then an
+    EXPIRED lease is legitimately taken by the sweep."""
+    import time
+    records = []
+    release = threading.Event()
+
+    def _slow(msg):
+        release.wait(timeout=30)
+        records.append(msg.text)
+
+    monkeypatch.setattr(main, "_dispatch_single", _slow)
+    batch = main._classify_all_entries(
+        {"entry": [{"changes": [{"value": {"messages": [
+            {"id": "wamid-slow", "from": "+234801", "timestamp": "1",
+             "type": "text", "text": {"body": "slow turn"}}]}}]}]})
+    claimed = main._claim_inbound_messages(batch)
+    assert len(claimed) == 1
+
+    worker = threading.Thread(target=main._process_inbound_batch,
+                              args=(claimed,))
+    worker.start()
+    time.sleep(0.5)  # live batch is inside _dispatch_single now
+    assert main.recover_orphaned_inbound(stale_minutes=0) == 0
+    release.set()
+    worker.join(timeout=30)
+    assert records == ["slow turn"]
+    assert _row(session_factory, "wamid-slow").status == "done"
+
+    # Expired lease + stale row: the sweep may take it.
+    batch2 = main._classify_all_entries(
+        {"entry": [{"changes": [{"value": {"messages": [
+            {"id": "wamid-stuck", "from": "+234801", "timestamp": "2",
+             "type": "text", "text": {"body": "stuck turn"}}]}}]}]})
+    main._claim_inbound_messages(batch2)
+    db = session_factory()
+    from datetime import timedelta
+    from FareBeep.models import utcnow
+    row = db.query(ProcessedMessage).filter_by(
+        message_id="wamid-stuck").first()
+    row.lease_owner = "dead-worker"
+    row.lease_expires_at = utcnow() - timedelta(minutes=1)
+    row.created_at = utcnow() - timedelta(minutes=10)
+    db.commit()
+    db.close()
+    assert main.recover_orphaned_inbound(stale_minutes=5) == 1
+    assert records == ["slow turn", "stuck turn"]
+
+
+# ---------------------------------------------------------------------------
 # P3 - payload column lands on a pre-existing processed_messages table
 # ---------------------------------------------------------------------------
 def test_payload_column_migrates_existing_table(tmp_path):
@@ -404,8 +514,15 @@ def test_payload_column_migrates_existing_table(tmp_path):
 
     engine = create_engine(f"sqlite:///{f}")
     with engine.begin() as conn:
+        # Mirrors database._apply_additive_migrations (Postgres runs the
+        # same columns as ADD COLUMN IF NOT EXISTS).
         conn.exec_driver_sql(
             "ALTER TABLE processed_messages ADD COLUMN payload JSON")
+        conn.exec_driver_sql(
+            "ALTER TABLE processed_messages ADD COLUMN lease_owner TEXT")
+        conn.exec_driver_sql(
+            "ALTER TABLE processed_messages ADD COLUMN "
+            "lease_expires_at TIMESTAMP")
     conn = sqlite3.connect(str(f))
     try:
         assert conn.execute(
@@ -434,6 +551,9 @@ def test_postgres_additive_statements_present():
     parent = Path(main.__file__).parent
     db_src = (parent / "database.py").read_text(encoding="utf-8")
     assert '("processed_messages", "payload", "JSONB")' in db_src
+    assert '("processed_messages", "lease_owner", "TEXT")' in db_src
+    assert '("processed_messages", "lease_expires_at", "TIMESTAMPTZ")' \
+        in db_src
     assert "ADD COLUMN IF NOT EXISTS" in db_src
     sql = (parent / "schema.sql").read_text(encoding="utf-8")
     assert "payload      jsonb" in sql
