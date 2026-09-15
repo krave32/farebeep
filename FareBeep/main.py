@@ -2789,6 +2789,34 @@ def booking_confirm(session_id: uuid.UUID):
 # ---------------------------------------------------------------------------
 @app.get("/tickets", include_in_schema=False)
 def tickets_page(t: str = ""):
+    # Airline online check-in portals (verified official URLs). Airlines
+    # expose no check-in API, so FareBeep deep-links the user to the
+    # carrier's own portal - the honest version of "check in with us".
+    import urllib.parse
+    checkin_urls = {
+        "air peace": "https://book-airpeace.crane.aero/ibe/checkin/search",
+        "ibom air": "https://www.ibomair.com/check-in/",
+        "green africa": "https://greenafrica.com/check-in/login",
+        "arik air": "https://arikair.crane.aero/ibe/checkin/search",
+    }
+
+    def _checkin_link(booking) -> str:
+        import json as _json
+        try:
+            details = _json.loads(booking.flight_details) \
+                if booking.flight_details else {}
+        except Exception:
+            details = {}
+        airline = str(details.get("airline") or "").strip()
+        if not airline:
+            return ""
+        url = checkin_urls.get(airline.lower())
+        if not url:
+            url = ("https://www.google.com/search?q="
+                   + urllib.parse.quote(f"{airline} online check-in"))
+        return (f"<a class='btn' href='{url}' target='_blank' "
+                f"rel='noopener'>Check in online · {airline}</a>")
+
     phone = _ticket_link_phone(t)
     if not phone:
         return HTMLResponse("""<!doctype html><html lang="en"><head>
@@ -2824,18 +2852,23 @@ display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0
                     badge = "<span style='color:#5ad19b'>● Ticket confirmed</span>"
                     pnr = pnr_from_ref(b.payment_ref)
                     ref = f"PNR <b>{pnr}</b> · ref {b.payment_ref}"
+                    cta = _checkin_link(b)
                 elif b.status == "pending":
                     badge = "<span style='color:#f5c451'>○ Awaiting payment</span>"
                     ref = f"ref {b.payment_ref}"
+                    cta = ""
                 else:
                     badge = "<span style='color:#8fa3c8'>✕ Closed</span>"
                     ref = f"ref {b.payment_ref}"
+                    cta = ""
                 rows.append(
                     f"<div class='card'><div class='route'>{b.origin} → "
                     f"{b.destination}</div>"
                     f"<div class='meta'>📅 {b.flight_date or '—'} · "
                     f"₦{b.total_price:,.0f}</div>"
-                    f"<div class='meta'>{badge} · {ref}</div></div>")
+                    f"<div class='meta'>{badge} · {ref}</div>"
+                    + (f"<div class='meta' style='margin-top:10px'>{cta}</div>"
+                       if cta else "") + "</div>")
             if not rows:
                 rows.append("<p style='color:#8fa3c8'>No bookings yet - "
                             "search a fare in the chat and book one.</p>")
@@ -2865,6 +2898,8 @@ margin:0;padding:24px 16px;max-width:480px;margin-inline:auto}}
 h1{{font-size:20px}} .card{{background:#141d33;border-radius:12px;
 padding:14px 16px;margin:10px 0}} .route{{font-weight:700;font-size:17px}}
 .meta{{color:#8fa3c8;font-size:13px;margin-top:4px}}
+.btn{{display:inline-block;background:#2b6cff;color:#fff;text-decoration:none;
+padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600}}
 .sec{{color:#8fa3c8;font-size:12px;margin-top:24px;text-align:center}}
 </style></head><body>
 <h1>🔐 My bookings</h1>

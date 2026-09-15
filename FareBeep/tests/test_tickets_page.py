@@ -43,12 +43,14 @@ def _user(session_factory, phone="2348144180146"):
     return u
 
 
-def _booking(session_factory, user, status="paid", ref="FB-ABCD1234"):
+def _booking(session_factory, user, status="paid", ref="FB-ABCD1234",
+             flight_details='{"airline": "Air Peace"}'):
     s = session_factory()
     b = BookingSession(
         user_id=user.user_id, origin="LOS", destination="ABV",
         flight_date="2026-10-01", payment_ref=ref, total_price=98500.0,
-        airline_price=90000.0, processing_fee=500.0, status=status)
+        airline_price=90000.0, processing_fee=500.0, status=status,
+        flight_details=flight_details)
     s.add(b)
     s.commit()
     s.close()
@@ -83,6 +85,17 @@ def test_page_renders_paid_ticket(client, session_factory):
     assert "LOS → ABV" in r.text
     assert "FB-1234" in r.text                 # PNR = last 4 of ref
     assert "Ticket confirmed" in r.text
+    assert "Check in online · Air Peace" in r.text
+    assert "book-airpeace.crane.aero" in r.text
+
+
+def test_page_checkin_falls_back_for_unknown_airline(client, session_factory):
+    u = _user(session_factory)
+    _booking(session_factory, u, status="paid",
+             flight_details='{"airline": "Mystery Air"}')
+    tok = main._ticket_link_token(u.phone)
+    r = client.get("/tickets", params={"t": tok})
+    assert "Mystery%20Air%20online%20check-in" in r.text
 
 
 def test_page_rejects_bad_token(client):
