@@ -6,6 +6,7 @@ pydantic
 python-dotenv
 httpx
 requests
+cryptography
 twilio
 apscheduler
 pytest

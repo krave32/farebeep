@@ -167,6 +167,20 @@ ADMIN_TOKEN = _get("ADMIN_TOKEN")
 # every burst message rewards the burst). STOP/unsubscribe is NEVER
 # throttled - opting out must always work, even mid-flood.
 RATE_LIMIT_PER_MIN = _get_int("RATE_LIMIT_PER_MIN", 20)
+
+# --- WhatsApp Flows (structured screens UI) --------------------------------
+# The "Set a beep" Flow asset ID from WhatsApp Manager (Flows). Unset =
+# the "Set a beep" card button degrades to the plain-text TRACK path.
+BEEP_FLOW_ID = _get("BEEP_FLOW_ID")
+# "draft" while building in Flow Builder (testable with your own number),
+# "published" once the flow is live for everyone.
+BEEP_FLOW_MODE = _get("BEEP_FLOW_MODE", "draft")
+# RSA private key (PEM) for Flow endpoint encryption. Generate with:
+#   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048
+# and upload the PUBLIC half in WhatsApp Manager -> your Flow -> Endpoint.
+# Unset = /flow speaks PLAINTEXT (dev only - Meta requires encryption in
+# production).
+FLOW_PRIVATE_KEY = _get("FLOW_PRIVATE_KEY")
 STATUS_WATCH_LEAD_HOURS = _get_int("STATUS_WATCH_LEAD_HOURS", 3)
 STATUS_POLL_SECONDS = _get_int("STATUS_POLL_SECONDS", 300)
 # APScheduler worker (--scheduled mode): how often the TRACKING checks

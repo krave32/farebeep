@@ -109,6 +109,32 @@ class MetaWhatsapp:
         return self._send(to, {"type": "interactive",
                                "interactive": interactive}, "flight_card")
 
+    def send_flow(self, to: str, flow_cta: str, flow_token: str,
+                  flow_id: str = None, flow_mode: str = None,
+                  body: str = "Set up your price alert") -> bool:
+        """WhatsApp Flow (structured screens). Opens the Meta-hosted
+        "Set a beep" form. Requires BEEP_FLOW_ID; returns False (caller
+        degrades to text) when unset or the channel is not Meta."""
+        from FareBeep.config import BEEP_FLOW_ID, BEEP_FLOW_MODE
+        fid = flow_id or BEEP_FLOW_ID
+        if not self._ready or not fid:
+            return False
+        interactive = {
+            "type": "flow",
+            "body": {"text": body[:1024]},
+            "action": {"name": "flow", "parameters": {
+                "flow_message_version": "3",
+                "flow_token": flow_token,
+                "flow_id": fid,
+                "flow_cta": flow_cta[:20],
+                "flow_action_type": "navigate",
+                "flow_action": {"screen": "SET_BEEP_TRIP"},
+                "mode": flow_mode or BEEP_FLOW_MODE,
+            }},
+        }
+        return self._send(to, {"type": "interactive",
+                               "interactive": interactive}, "flow")
+
     def send_template(self, to: str, template_name: str,
                       body_parameters: list = None,
                       language: str = "en_US",

@@ -70,6 +70,10 @@ logger = logging.getLogger("farebeep.main")
 
 app = FastAPI(title="FareBeep - Transactional Utility")
 
+# WhatsApp Flows data-exchange endpoint (the "Set a beep" screens).
+from FareBeep.whatsapp.flows import router as flows_router  # noqa: E402
+app.include_router(flows_router)
+
 notifier = get_notifier()
 
 # Which brain answered, this process. Ops-visible via GET /admin/ops so a
@@ -550,6 +554,9 @@ def _dispatch_single(msg) -> None:
         if isinstance(legacy, str) and legacy.strip():
             _handle_incoming_message(phone, legacy)
         return
+    if msg.message_type == MessageType.FLOW_RESPONSE:
+        _handle_flow_completion(phone, msg.flow_token, msg.flow_data)
+        return
     if msg.message_type in (MessageType.BUTTON_REPLY,
                             MessageType.LIST_REPLY):
         tap_id = msg.button_id or msg.list_id or ""
@@ -565,11 +572,73 @@ def _dispatch_single(msg) -> None:
         if tap[0] == "beep":
             _tap_beep_by_phone(phone, tap[1])
             return
+        if tap[0] == "set_beep":
+            _send_beep_flow(phone)
+            return
         _handle_incoming_message(
             phone, str(tap[1]) if tap[0] == "pick" else "BOOK")
         return
     logger.info("Inbound %s from %s needs no concierge turn - ignored",
                 msg.message_type, phone)
+
+
+def _send_beep_flow(phone: str) -> None:
+    """Offer the WhatsApp Flow (Meta-hosted structured screens). Without
+    BEEP_FLOW_ID - or on a non-Meta channel - degrade to the guided
+    TRACK path so the button never dead-ends."""
+    try:
+        sent = MetaWhatsapp().send_flow(
+            phone, flow_cta="Set my beep",
+            flow_token=f"beep:{phone}:{int(time.time())}",
+            body="Set a price-drop alert - we'll message you when fares drop.")
+    except Exception as e:
+        logger.warning("send_flow failed (%s) - TRACK fallback: %s",
+                       phone, e)
+        sent = False
+    if not sent:
+        _handle_incoming_message(phone, "TRACK")
+
+
+def _handle_flow_completion(phone: str, token: str, data: dict) -> None:
+    """A finished WhatsApp Flow (nfm_reply in chat). The /flow endpoint
+    already validated and created the watch; this turn is the
+    user-facing confirmation AND the crash-safe fallback (endpoint calls
+    are not durable; webhook turns are save-before-ack'd and leased).
+    Creation is idempotent per (user, route), so both paths firing is
+    safe."""
+    d = (data or {}).get("beep_data") or (data or {})
+    origin = str(d.get("origin") or "").upper()
+    destination = str(d.get("destination") or "").upper()
+    if not origin or not destination or origin == destination:
+        _say(phone, "Something went wrong with the beep form 😅 - try it "
+                    "again, or just tell me the route here in chat.")
+        return
+    db = SessionLocal()
+    try:
+        user = _get_or_create_user(db, phone)
+        from FareBeep.alerts import SubscriptionMonitor
+        SubscriptionMonitor(db).subscribe(
+            user.user_id, origin, destination,
+            target_price=_flow_target_price(d),
+            target_date=str(d.get("departure_date") or "") or None)
+    finally:
+        db.close()
+    date_label = d.get("departure_date") or "your dates"
+    _say(phone, f"✅ *Your beep is on!* {city_name(origin)} → "
+                f"{city_name(destination)} on {date_label}.\n"
+                f"We'll message you when the fare drops. Reply *my beeps* "
+                f"anytime to manage.")
+
+
+def _flow_target_price(d: dict):
+    raw = d.get("target_price")
+    if raw in (None, ""):
+        return None
+    try:
+        v = float(raw)
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _arrival_key(payload: dict, created) -> tuple:

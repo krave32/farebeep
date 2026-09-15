@@ -110,12 +110,16 @@ def card_body(fare: dict, origin: str, destination: str) -> str:
 
 def card_buttons(fare: dict, idx: int) -> list:
     """(button_id, title) pairs. idx is 1-based rank; 0 = single-fare
-    card backed by last_fare context instead of the ranked list."""
+    card backed by last_fare context instead of the ranked list.
+    Third button "Set a beep" opens the WhatsApp Flow (structured
+    screens); degrades to the guided TRACK path without BEEP_FLOW_ID."""
     price = f"\u20a6{fare.get('price', 0):,.0f}"
     book_title = f"Book {price}"[:MAX_BUTTON_TITLE]
     if idx <= 0:
-        return [("book", book_title), ("alert:0", "Set alert")]
-    return [(f"pick:{idx}", book_title), (f"alert:{idx}", "Set alert")]
+        return [("book", book_title), ("alert:0", "Set alert"),
+                ("set_beep", "Set a beep")]
+    return [(f"pick:{idx}", book_title), (f"alert:{idx}", "Set alert"),
+            ("set_beep", "Set a beep")]
 
 
 def translate_tap(button_id: str):
@@ -129,6 +133,8 @@ def translate_tap(button_id: str):
         return None
     if button_id == "book":
         return ("book",)
+    if button_id == "set_beep":
+        return ("set_beep",)
     if button_id.startswith("beep:"):
         try:
             return ("beep", int(button_id[5:]))

@@ -123,10 +123,11 @@ def test_card_body_omits_missing_extras():
 
 
 def test_card_buttons_ranked_and_single():
-    book, alert = cards.card_buttons(FARE, 2)
+    book, alert, set_beep = cards.card_buttons(FARE, 2)
     assert book[0] == "pick:2" and "98,000" in book[1]
     assert alert == ("alert:2", "Set alert")
-    book0, alert0 = cards.card_buttons(FARE, 0)
+    assert set_beep == ("set_beep", "Set a beep")  # opens the Flow
+    book0, alert0, _ = cards.card_buttons(FARE, 0)
     assert book0[0] == "book"
     assert alert0 == ("alert:0", "Set alert")
     for _, title in cards.card_buttons(FARE, 1):
@@ -137,7 +138,7 @@ def test_translate_tap():
     assert cards.translate_tap("pick:2") == ("pick", 2)
     assert cards.translate_tap("alert:0") == ("alert", 0)
     assert cards.translate_tap("book") == ("book",)
-    assert cards.translate_tap("pick:99") is None
+    assert cards.translate_tap("set_beep") == ("set_beep",)
     assert cards.translate_tap("buy-now") is None
     assert cards.translate_tap("") is None
     assert cards.translate_tap(None) is None

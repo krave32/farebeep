@@ -1,0 +1,167 @@
+{
+  "version": "3.0",
+  "screens": [
+    {
+      "id": "SET_BEEP_TRIP",
+      "title": "Set a beep",
+      "terminal": false,
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "trip_form",
+            "children": [
+              { "type": "TextHeading", "text": "Set a price beep 🔔" },
+              { "type": "TextBody", "text": "Pick your route - we'll watch fares and message you the moment they drop." },
+              {
+                "type": "Dropdown",
+                "name": "origin",
+                "label": "Flying from",
+                "required": true,
+                "options": [
+                  { "id": "LOS", "title": "Lagos (LOS)" },
+                  { "id": "ABV", "title": "Abuja (ABV)" },
+                  { "id": "PHC", "title": "Port Harcourt (PHC)" },
+                  { "id": "KAN", "title": "Kano (KAN)" },
+                  { "id": "ENU", "title": "Enugu (ENU)" },
+                  { "id": "BNI", "title": "Benin (BNI)" },
+                  { "id": "CBQ", "title": "Calabar (CBQ)" },
+                  { "id": "ILR", "title": "Ilorin (ILR)" },
+                  { "id": "KAD", "title": "Kaduna (KAD)" },
+                  { "id": "MDI", "title": "Makurdi (MDI)" },
+                  { "id": "MIU", "title": "Maiduguri (MIU)" },
+                  { "id": "MXJ", "title": "Minna (MXJ)" },
+                  { "id": "QOW", "title": "Owerri (QOW)" },
+                  { "id": "SKO", "title": "Sokoto (SKO)" },
+                  { "id": "YOL", "title": "Yola (YOL)" },
+                  { "id": "ABB", "title": "Asaba (ABB)" },
+                  { "id": "AKR", "title": "Akure (AKR)" },
+                  { "id": "IBA", "title": "Ibadan (IBA)" },
+                  { "id": "JOS", "title": "Jos (JOS)" },
+                  { "id": "QRW", "title": "Warri (QRW)" }
+                ]
+              },
+              {
+                "type": "Dropdown",
+                "name": "destination",
+                "label": "Flying to",
+                "required": true,
+                "options": [
+                  { "id": "ABV", "title": "Abuja (ABV)" },
+                  { "id": "LOS", "title": "Lagos (LOS)" },
+                  { "id": "PHC", "title": "Port Harcourt (PHC)" },
+                  { "id": "KAN", "title": "Kano (KAN)" },
+                  { "id": "ENU", "title": "Enugu (ENU)" },
+                  { "id": "BNI", "title": "Benin (BNI)" },
+                  { "id": "CBQ", "title": "Calabar (CBQ)" },
+                  { "id": "ILR", "title": "Ilorin (ILR)" },
+                  { "id": "KAD", "title": "Kaduna (KAD)" },
+                  { "id": "MDI", "title": "Makurdi (MDI)" },
+                  { "id": "MIU", "title": "Maiduguri (MIU)" },
+                  { "id": "MXJ", "title": "Minna (MXJ)" },
+                  { "id": "QOW", "title": "Owerri (QOW)" },
+                  { "id": "SKO", "title": "Sokoto (SKO)" },
+                  { "id": "YOL", "title": "Yola (YOL)" },
+                  { "id": "ABB", "title": "Asaba (ABB)" },
+                  { "id": "AKR", "title": "Akure (AKR)" },
+                  { "id": "IBA", "title": "Ibadan (IBA)" },
+                  { "id": "JOS", "title": "Jos (JOS)" },
+                  { "id": "QRW", "title": "Warri (QRW)" }
+                ]
+              },
+              {
+                "type": "Footer",
+                "label": "Continue",
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": { "type": "screen", "name": "SET_BEEP_DATES" }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SET_BEEP_DATES",
+      "title": "Travel date",
+      "terminal": false,
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "dates_form",
+            "children": [
+              { "type": "TextHeading", "text": "When do you fly?" },
+              { "type": "TextBody", "text": "We'll watch fares for this route up to your date." },
+              {
+                "type": "DatePicker",
+                "name": "departure_date",
+                "label": "Departure date",
+                "required": true
+              },
+              {
+                "type": "Footer",
+                "label": "Continue",
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": { "type": "screen", "name": "SET_BEEP_REVIEW" }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SET_BEEP_REVIEW",
+      "title": "Alert settings",
+      "terminal": false,
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "review_form",
+            "children": [
+              { "type": "TextHeading", "text": "Almost done" },
+              { "type": "TextBody", "text": "Choose who is travelling and, if you like, the price we should watch for." },
+              {
+                "type": "Dropdown",
+                "name": "passengers",
+                "label": "Passengers",
+                "required": true,
+                "options": [
+                  { "id": "1", "title": "1" },
+                  { "id": "2", "title": "2" },
+                  { "id": "3", "title": "3" },
+                  { "id": "4", "title": "4" },
+                  { "id": "5", "title": "5" },
+                  { "id": "6", "title": "6" },
+                  { "id": "7", "title": "7" },
+                  { "id": "8", "title": "8" },
+                  { "id": "9", "title": "9" }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "target_price",
+                "label": "Alert me below this price (₦) - optional",
+                "input-type": "number",
+                "required": false,
+                "helper-text": "Leave empty to alert on ANY price drop."
+              },
+              {
+                "type": "Footer",
+                "label": "Set my beep",
+                "on-click-action": { "name": "complete" }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
