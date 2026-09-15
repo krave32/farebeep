@@ -364,13 +364,16 @@ def test_schema_sql_declares_new_tables():
 # Q5 - one live path
 # ---------------------------------------------------------------------------
 def test_live_path_bypasses_whatsapp_handlers(client, monkeypatch):
-    import FareBeep.whatsapp.handlers as handlers
+    import importlib.util
     import FareBeep.whatsapp.sender as sender
+
+    # handlers.py was deleted outright - there is no second processing
+    # path to accidentally rewire.
+    assert importlib.util.find_spec("FareBeep.whatsapp.handlers") is None
 
     def _forbidden(*a, **k):
         raise AssertionError("second processing path must not run")
 
-    monkeypatch.setattr(handlers, "handle_inbound", _forbidden)
     monkeypatch.setattr(sender, "send_text", _forbidden)
     monkeypatch.setattr(sender, "send_buttons", _forbidden)
     monkeypatch.setattr(main, "_handle_incoming_message",
