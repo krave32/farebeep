@@ -74,19 +74,22 @@ def test_ping_answers_art(client):
     assert r.json() == {"data": {"status": "art"}}
 
 
-def test_init_serves_airports(client):
-    r = _post_flow(client, {"version": "3.0", "action": "INIT",
-                            "screen": "SET_BEEP_TRIP"})
+def test_init_picks_first_screen(client):
+    # Meta sends INIT with an empty screen - the endpoint must answer
+    # with the first screen (never empty: Meta validates against the
+    # routing model).
+    r = _post_flow(client, {"version": "3.0", "action": "INIT", "screen": ""})
     body = r.json()
     assert body["screen"] == "SET_BEEP_TRIP"
-    assert len(body["data"]["airports"]) == 20
+    assert body["data"] == {}
 
 
-def test_dates_screen_rejects_same_airport(client):
-    r = _post_flow(client, {"version": "3.0", "action": "data_exchange",
-                            "screen": "SET_BEEP_DATES",
-                            "origin": "LOS", "destination": "LOS"})
-    assert "same" in r.json()["error"].lower()
+def test_back_walks_up_the_stack(client):
+    r = _post_flow(client, {"version": "3.0", "action": "BACK",
+                            "screen": "SET_BEEP_REVIEW"})
+    assert r.json()["screen"] == "SET_BEEP_DATES"
+    r = _post_flow(client, {"version": "3.0", "action": "BACK", "screen": ""})
+    assert r.json()["screen"] == "SET_BEEP_TRIP"
 
 
 # -- Q2: completion creates the watch (idempotent) --------------------------

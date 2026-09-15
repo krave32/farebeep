@@ -27,27 +27,6 @@ from fastapi.responses import JSONResponse
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-AIRPORTS = [
-    {"id": "LOS", "title": "Lagos (LOS)"}, {"id": "ABV", "title": "Abuja (ABV)"},
-    {"id": "PHC", "title": "Port Harcourt (PHC)"}, {"id": "KAN", "title": "Kano (KAN)"},
-    {"id": "ENU", "title": "Enugu (ENU)"}, {"id": "BNI", "title": "Benin (BNI)"},
-    {"id": "CBQ", "title": "Calabar (CBQ)"}, {"id": "ILR", "title": "Ilorin (ILR)"},
-    {"id": "KAD", "title": "Kaduna (KAD)"}, {"id": "MDI", "title": "Makurdi (MDI)"},
-    {"id": "MIU", "title": "Maiduguri (MIU)"}, {"id": "MXJ", "title": "Minna (MXJ)"},
-    {"id": "QOW", "title": "Owerri (QOW)"}, {"id": "SKO", "title": "Sokoto (SKO)"},
-    {"id": "YOL", "title": "Yola (YOL)"}, {"id": "ABB", "title": "Asaba (ABB)"},
-    {"id": "AKR", "title": "Akure (AKR)"}, {"id": "IBA", "title": "Ibadan (IBA)"},
-    {"id": "JOS", "title": "Jos (JOS)"}, {"id": "QRW", "title": "Warri (QRW)"},
-]
-
-AIRLINES = [
-    {"id": "P4", "title": "Air Peace"}, {"id": "Q9", "title": "Arik Air"},
-    {"id": "I7", "title": "Ibom Air"}, {"id": "5N", "title": "Aero Contractors"},
-    {"id": "VK", "title": "Green Africa"}, {"id": "UJ", "title": "United Nigeria"},
-    {"id": "N2", "title": "Overland Airways"}, {"id": "VL", "title": "ValueJet"},
-    {"id": "W3", "title": "Max Air"}, {"id": "R4", "title": "Rano Air"},
-]
-
 
 # ---------------------------------------------------------------------------
 # Meta Flows endpoint encryption (AES-256-GCM + RSA-OAEP hybrid)
@@ -181,25 +160,28 @@ async def flow_data_exchange(request: Request):
     if action == "ping":
         return _encrypt_response(aes_key, {"data": {"status": "art"}})
 
-    if action in ("INIT", "data_exchange"):
-        if screen == "SET_BEEP_TRIP":
-            return _encrypt_response(aes_key, {"version": "3.0",
-                                               "screen": screen,
-                                               "data": {"airports": AIRPORTS,
-                                                        "airlines": AIRLINES}})
-        if screen == "SET_BEEP_DATES":
-            o, d = data.get("origin", ""), data.get("destination", "")
-            if o and d and o == d:
-                return _encrypt_response(aes_key, {"version": "3.0",
-                                                   "screen": screen,
-                                                   "error": "Origin and destination cannot be the same.",
-                                                   "data": {}})
-            return _encrypt_response(aes_key, {"version": "3.0",
-                                               "screen": screen,
-                                               "data": {"origin": o,
-                                                        "destination": d}})
+    if action == "INIT":
+        # Flow opened. Meta sends screen="" - the endpoint picks the
+        # first screen. Screens themselves are static in flow_screens.json
+        # (v7.3 inline data-sources), so no payload data is served here.
         return _encrypt_response(aes_key, {"version": "3.0",
-                                           "screen": screen, "data": {}})
+                                           "screen": "SET_BEEP_TRIP",
+                                           "data": {}})
+
+    if action == "BACK":
+        previous = {"SET_BEEP_DATES": "SET_BEEP_TRIP",
+                    "SET_BEEP_REVIEW": "SET_BEEP_DATES"}.get(screen,
+                                                             "SET_BEEP_TRIP")
+        return _encrypt_response(aes_key, {"version": "3.0",
+                                           "screen": previous, "data": {}})
+
+    if action == "data_exchange":
+        # Only reachable if a screen uses the data_exchange action; the
+        # current screens navigate client-side. Defensive echo.
+        current = screen if screen in ("SET_BEEP_TRIP", "SET_BEEP_DATES",
+                                       "SET_BEEP_REVIEW") else "SET_BEEP_TRIP"
+        return _encrypt_response(aes_key, {"version": "3.0",
+                                           "screen": current, "data": {}})
 
     if action == "COMPLETE":
         beep = data.get("beep_data") or data   # nested or flattened form
@@ -212,11 +194,15 @@ async def flow_data_exchange(request: Request):
             phone = _flow_token_phone(token)
             if phone:
                 _create_beep(phone, beep)
-            return _encrypt_response(aes_key, {"version": "3.0",
-                                               "screen": "SUCCESS",
-                                               "data": {"extension_message_response": {"params": {"flow_token": token}}}})
+        # SUCCESS is a reserved screen name - the documented flow-completion
+        # response; it is not part of the routing model.
         return _encrypt_response(aes_key, {"version": "3.0",
-                                           "screen": "SUCCESS", "data": {}})
+                                           "screen": "SUCCESS",
+                                           "data": {"extension_message_response": {"params": {"flow_token": token}}}})
 
+    # Unknown action: never return an empty screen - Meta validates every
+    # response screen against the routing model.
+    fallback = screen if screen in ("SET_BEEP_TRIP", "SET_BEEP_DATES",
+                                    "SET_BEEP_REVIEW") else "SET_BEEP_TRIP"
     return _encrypt_response(aes_key, {"version": "3.0",
-                                       "screen": screen, "data": {}})
+                                       "screen": fallback, "data": {}})
