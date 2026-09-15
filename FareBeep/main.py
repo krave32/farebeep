@@ -1908,10 +1908,16 @@ async def telegram_webhook(request: Request, background: BackgroundTasks):
     chat_id = str(chat.get("id") or "")
     text = str(message.get("text") or "")
     if text and chat_id:
-        from FareBeep.notifier import TelegramBot
-        TelegramBot().send_action(chat_id)  # typing… (best-effort)
+        # typing bubble runs as a background task (FIFO, before the reply
+        # task): a dead Telegram API must never delay the 200 ack
+        background.add_task(_telegram_typing, chat_id)
         background.add_task(_handle_incoming_message, chat_id, text)
     return {"ok": True}
+
+
+def _telegram_typing(chat_id: str) -> None:
+    from FareBeep.notifier import TelegramBot
+    TelegramBot().send_action(chat_id)  # typing… (best-effort)
 
 
 @app.get("/webhook/telegram")

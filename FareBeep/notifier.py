@@ -216,6 +216,9 @@ class TelegramBot:
     def __init__(self, token: str = None, http_client: httpx.Client = None):
         self.token = token or TELEGRAM_BOT_TOKEN
         self._http = http_client or httpx.Client(timeout=10.0)
+        # send_action rides the injected client (tests) or gets its own
+        # tight-timeout client on first use
+        self._action_http = http_client
 
     @property
     def _ready(self) -> bool:
@@ -247,11 +250,16 @@ class TelegramBot:
     def send_action(self, to: str, action: str = "typing") -> bool:
         """Typing indicator (sendChatAction). Telegram shows it ~5s, so
         call on receipt - the reply lands while it is still visible on
-        fast turns. Best-effort: never raises, never blocks a reply."""
+        fast turns. Best-effort: never raises, never blocks a reply.
+        Uses a tight timeout (1s connect / 3s total): a dead Telegram
+        API must not stall a webhook ack or a poller turn."""
         if not self._ready:
             return False
+        if self._action_http is None:
+            self._action_http = httpx.Client(
+                timeout=httpx.Timeout(3.0, connect=1.0))
         try:
-            resp = self._http.post(
+            resp = self._action_http.post(
                 self._api_url("sendChatAction"),
                 json={"chat_id": to, "action": action})
             resp.raise_for_status()
