@@ -1,5 +1,10 @@
 {
-  "version": "3.0",
+  "version": "7.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "SET_BEEP_TRIP": ["SET_BEEP_DATES"],
+    "SET_BEEP_DATES": ["SET_BEEP_REVIEW"]
+  },
   "screens": [
     {
       "id": "SET_BEEP_TRIP",
@@ -19,7 +24,7 @@
                 "name": "origin",
                 "label": "Flying from",
                 "required": true,
-                "options": [
+                "data-source": [
                   { "id": "LOS", "title": "Lagos (LOS)" },
                   { "id": "ABV", "title": "Abuja (ABV)" },
                   { "id": "PHC", "title": "Port Harcourt (PHC)" },
@@ -47,7 +52,7 @@
                 "name": "destination",
                 "label": "Flying to",
                 "required": true,
-                "options": [
+                "data-source": [
                   { "id": "ABV", "title": "Abuja (ABV)" },
                   { "id": "LOS", "title": "Lagos (LOS)" },
                   { "id": "PHC", "title": "Port Harcourt (PHC)" },
@@ -118,7 +123,8 @@
     {
       "id": "SET_BEEP_REVIEW",
       "title": "Alert settings",
-      "terminal": false,
+      "terminal": true,
+      "success": true,
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
@@ -133,7 +139,7 @@
                 "name": "passengers",
                 "label": "Passengers",
                 "required": true,
-                "options": [
+                "data-source": [
                   { "id": "1", "title": "1" },
                   { "id": "2", "title": "2" },
                   { "id": "3", "title": "3" },

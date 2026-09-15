@@ -9,16 +9,16 @@ Three contract points:
      refreshes the target, never duplicates). The nfm_reply webhook turn
      calls the same service as a crash-safe fallback (endpoint calls are
      not durable; webhook delivery is save-before-ack'd).
-  3. Encryption follows Meta's Flows endpoint scheme: request =
-     base64( b"\\x00\\x01" + RSA-OAEP(SHA-256)-wrapped AES-256-GCM key +
-     12B IV + ciphertext||tag ); response = base64( b"\\x00\\x01" + new IV
-     + ciphertext||tag ) with the SAME AES key. Without FLOW_PRIVATE_KEY
-     configured the endpoint speaks plaintext - dev only.
+  3. Encryption follows Meta's Flows endpoint scheme: request = JSON
+     envelope {encrypted_flow_data, encrypted_aes_key, initial_vector}
+     (AES-256-GCM with 16B nonce; RSA-OAEP(SHA-256)-wrapped 32B AES key);
+     response = base64(AES-256-GCM(flipped_iv, payload)) as text/plain
+     with the SAME AES key. Without FLOW_PRIVATE_KEY configured the
+     endpoint speaks plaintext - dev only.
 """
 import base64
 import json
 import logging
-import os
 from datetime import date, datetime
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -51,10 +51,17 @@ AIRLINES = [
 
 # ---------------------------------------------------------------------------
 # Meta Flows endpoint encryption (AES-256-GCM + RSA-OAEP hybrid)
+#
+# Wire format (per Meta's official endpoint example):
+#   request  = JSON {encrypted_flow_data, encrypted_aes_key, initial_vector}
+#              - AES key: 32B, RSA-OAEP(SHA-256)-wrapped, base64
+#              - flow data: AES-256-GCM with 16B nonce, tag appended, base64
+#   response = base64( AES-256-GCM(flipped_iv, json(payload)) )  text/plain
+#              - SAME AES key; the request IV with every bit flipped
 # ---------------------------------------------------------------------------
-def _decrypt_request(body: bytes) -> tuple[dict, bytes | None]:
-    """Returns (payload, aes_key). Without FLOW_PRIVATE_KEY the body is
-    plaintext JSON and aes_key is None (dev mode)."""
+def _decrypt_request(body: bytes) -> tuple[dict, tuple[bytes, bytes] | None]:
+    """Returns (payload, (aes_key, iv)). Without FLOW_PRIVATE_KEY the body
+    is plaintext JSON and the crypto context is None (dev mode)."""
     from FareBeep.config import FLOW_PRIVATE_KEY
     if not FLOW_PRIVATE_KEY:
         return json.loads(body.decode("utf-8")), None
@@ -64,26 +71,26 @@ def _decrypt_request(body: bytes) -> tuple[dict, bytes | None]:
 
     key = serialization.load_pem_private_key(
         FLOW_PRIVATE_KEY.encode(), password=None)
-    raw = base64.b64decode(body)
-    if raw[:2] != b"\x00\x01":
-        raise HTTPException(400, "Unsupported flow encryption version")
-    enc_key = raw[2:2 + 256]                       # RSA-2048 wrapped AES key
-    iv = raw[2 + 256:2 + 256 + 12]                 # 12-byte GCM IV
-    blob = raw[2 + 256 + 12:]                      # ciphertext || 16B tag
-    aes_key = key.decrypt(enc_key, padding.OAEP(
-        mgf=padding.MGF1(algorithm=hashes.SHA256()),
-        algorithm=hashes.SHA256(), label=None))
-    plaintext = AESGCM(aes_key).decrypt(iv, blob, None)
-    return json.loads(plaintext), aes_key
+    envelope = json.loads(body.decode("utf-8"))
+    aes_key = key.decrypt(
+        base64.b64decode(envelope["encrypted_aes_key"]),
+        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                     algorithm=hashes.SHA256(), label=None))
+    iv = base64.b64decode(envelope.get("initial_vector")
+                          or envelope.get("iv") or "")
+    blob = base64.b64decode(envelope["encrypted_flow_data"])
+    payload = json.loads(AESGCM(aes_key).decrypt(iv, blob, None))
+    return payload, (aes_key, iv)
 
 
-def _encrypt_response(aes_key: bytes | None, payload: dict) -> Response:
-    if aes_key is None:
+def _encrypt_response(ctx: tuple[bytes, bytes] | None, payload: dict) -> Response:
+    if ctx is None:
         return JSONResponse(payload)
+    aes_key, iv = ctx
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    iv = os.urandom(12)
-    blob = AESGCM(aes_key).encrypt(iv, json.dumps(payload).encode(), None)
-    return Response(content=base64.b64encode(b"\x00\x01" + iv + blob),
+    flipped_iv = bytes(b ^ 0xFF for b in iv)
+    blob = AESGCM(aes_key).encrypt(flipped_iv, json.dumps(payload).encode(), None)
+    return Response(content=base64.b64encode(blob),
                     media_type="text/plain")
 
 

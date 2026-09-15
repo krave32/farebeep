@@ -52,6 +52,10 @@ def client(monkeypatch, session_factory):
     monkeypatch.setattr(main, "SessionLocal", session_factory)
     monkeypatch.setattr(main.brain, "GEMINI_API_KEY", None)
     monkeypatch.setattr(main, "GROQ_API_KEY", None)
+    # hermetic default: plaintext /flow mode (dev), even though the local
+    # .env may carry a real FLOW_PRIVATE_KEY - encrypted tests opt in
+    import FareBeep.config as config
+    monkeypatch.setattr(config, "FLOW_PRIVATE_KEY", None)
     # hermetic typing bubble: the dispatch path builds MetaWhatsapp()
     # directly, which would hit the real Graph API (token in .env)
     monkeypatch.setattr(main, "MetaWhatsapp", type("W", (), {
@@ -164,38 +168,58 @@ def rsa_keypair():
     return priv, pub
 
 
-def _encrypt_for(pub_pem: bytes, payload: dict) -> bytes:
+def _encrypt_for(pub_pem: bytes, payload: dict) -> tuple[bytes, bytes, bytes]:
+    """Meta's real wire format: JSON envelope of three base64 fields,
+    AES-256-GCM with a 16-byte nonce."""
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import padding
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     aes_key = os.urandom(32)
-    iv = os.urandom(12)
+    iv = os.urandom(16)
     blob = AESGCM(aes_key).encrypt(iv, json.dumps(payload).encode(), None)
     pub = serialization.load_pem_public_key(pub_pem)
     wrapped = pub.encrypt(aes_key, padding.OAEP(
         mgf=padding.MGF1(algorithm=hashes.SHA256()),
         algorithm=hashes.SHA256(), label=None))
-    return base64.b64encode(b"\x00\x01" + wrapped + iv + blob), aes_key
+    envelope = {
+        "encrypted_flow_data": base64.b64encode(blob).decode(),
+        "encrypted_aes_key": base64.b64encode(wrapped).decode(),
+        "initial_vector": base64.b64encode(iv).decode(),
+    }
+    return json.dumps(envelope).encode(), aes_key, iv
 
 
-def _decrypt_response(aes_key: bytes, body: bytes) -> dict:
+def _decrypt_response(aes_key: bytes, iv: bytes, body: bytes) -> dict:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    raw = base64.b64decode(body)
-    assert raw[:2] == b"\x00\x01"
-    iv, blob = raw[2:14], raw[14:]
-    return json.loads(AESGCM(aes_key).decrypt(iv, blob, None))
+    flipped_iv = bytes(b ^ 0xFF for b in iv)
+    return json.loads(AESGCM(aes_key).decrypt(
+        flipped_iv, base64.b64decode(body), None))
 
 
 def test_encrypted_roundtrip(client, monkeypatch, rsa_keypair):
     priv, pub = rsa_keypair
     import FareBeep.config as config
     monkeypatch.setattr(config, "FLOW_PRIVATE_KEY", priv)
-    body, aes_key = _encrypt_for(pub, _complete_payload())
+    body, aes_key, iv = _encrypt_for(pub, _complete_payload())
     r = client.post("/flow", content=body,
-                    headers={"Content-Type": "text/plain"})
+                    headers={"Content-Type": "application/json"})
     assert r.status_code == 200
-    payload = _decrypt_response(aes_key, r.content)
+    payload = _decrypt_response(aes_key, iv, r.content)
     assert payload["screen"] == "SUCCESS"
+
+
+def test_encrypted_ping_roundtrip(client, monkeypatch, rsa_keypair):
+    # Meta's health check: encrypted {"version":"3.0","action":"ping"}
+    # must answer the encrypted {"data": {"status": "art"}}
+    priv, pub = rsa_keypair
+    import FareBeep.config as config
+    monkeypatch.setattr(config, "FLOW_PRIVATE_KEY", priv)
+    body, aes_key, iv = _encrypt_for(pub, {"version": "3.0", "action": "ping"})
+    r = client.post("/flow", content=body,
+                    headers={"Content-Type": "application/json"})
+    assert r.status_code == 200
+    payload = _decrypt_response(aes_key, iv, r.content)
+    assert payload == {"data": {"status": "art"}}
 
 
 def test_plaintext_rejected_when_key_set(client, monkeypatch, rsa_keypair):
