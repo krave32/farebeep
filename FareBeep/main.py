@@ -2618,6 +2618,33 @@ def _notify_session_user(session, text: str) -> None:
     notifier.send_text(user.phone, text)
 
 
+def _send_ticket_pdf(session, pnr: str) -> None:
+    """Render the booking voucher and push it as a WhatsApp document.
+    Best-effort: a PDF failure must never mask the paid confirmation."""
+    try:
+        from FareBeep.ticket_pdf import render_ticket_pdf
+        data = render_ticket_pdf(session, pnr, city_name=city_name)
+        if not hasattr(notifier, "send_document"):
+            logger.info("Channel has no document support - ticket PDF "
+                        "skipped for %s", session.payment_ref)
+            return
+        db = SessionLocal()
+        try:
+            user = (db.query(User)
+                    .filter(User.user_id == session.user_id).first())
+        finally:
+            db.close()
+        if user is None:
+            return
+        notifier.send_document(
+            user.phone, data, filename=f"FareBeep-{pnr}.pdf",
+            caption=f"Your FareBeep booking - PNR {pnr}. "
+                    f"Present this at check-in.")
+    except Exception as e:
+        logger.error("Ticket PDF send failed for %s: %s",
+                     session.payment_ref, e)
+
+
 @app.post("/webhook/paystack")
 async def paystack_webhook(request: Request):
     """Paystack event receiver - X-Paystack-Signature (HMAC-SHA512) verified
@@ -2657,6 +2684,7 @@ async def paystack_webhook(request: Request):
                 f"{session.flight_date}\n"
                 f"Paid: ₦{session.total_price:,.0f}\n"
                 f"{ticket_note} Safe travels!")
+            _send_ticket_pdf(session, pnr)
         elif outcome["outcome"] == "refund_required":
             _notify_session_user(
                 session,

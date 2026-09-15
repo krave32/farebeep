@@ -77,6 +77,35 @@ class MetaWhatsapp:
         return self._send(to, {"type": "text",
                                "text": {"body": body}}, "text")
 
+    def send_document(self, to: str, data: bytes, filename: str,
+                      caption: str = None,
+                      mime: str = "application/pdf") -> bool:
+        """Send a file (e.g. the ticket PDF): upload to Meta media first,
+        then send the document message referencing the media id."""
+        if not self.access_token or not self.phone_number_id:
+            logger.warning("META creds not set - document NOT sent to %s", to)
+            return False
+        try:
+            upload = self._http.post(
+                f"{GRAPH_BASE}/{self.api_version}"
+                f"/{self.phone_number_id}/media",
+                headers={"Authorization": f"Bearer {self.access_token}"},
+                data={"messaging_product": "whatsapp"},
+                files={"file": (filename, data, mime)})
+            upload.raise_for_status()
+            media_id = upload.json().get("id")
+            if not media_id:
+                logger.error("Media upload returned no id: %s", upload.text)
+                return False
+            doc = {"type": "document",
+                   "document": {"id": media_id, "filename": filename}}
+            if caption:
+                doc["document"]["caption"] = caption[:1024]
+            return self._send(to, doc, "document")
+        except Exception as e:
+            logger.error("Document send failed to %s: %s", to, e)
+            return False
+
     def send_typing_indicator(self, to: str) -> bool:
         """Show 'typing...' on the user's WhatsApp (up to ~25s or until
         our reply lands). Best-effort: never raises, never blocks the
