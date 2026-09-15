@@ -21,6 +21,11 @@ Endpoints:
                            10-minute booking loop; issues the Travels247 PNR on
                            success when a booking_token + travellers exist).
   GET  /health          - liveness.
+  GET  /admin/ops       - ops snapshot (X-Admin-Token; closed without
+                          ADMIN_TOKEN): inbound dispatch health, dead
+                          letters, receipts, beeps, bookings, agent stats
+  POST /admin/ops/dead-letters/{id}/replay
+                        - re-dispatch one dead letter from its payload
 
 Run:  uvicorn FareBeep.main:app --port 8000
 """
@@ -39,16 +44,18 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                PlainTextResponse, RedirectResponse)
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func
 
 from FareBeep import brain, cards, chatstate
-from FareBeep.config import (APP_BASE_URL, CONSENT_VERSION, MESSAGING_PROVIDER,
-                             META_APP_SECRET, META_VERIFY_TOKEN,
-                             REQUOTE_TOLERANCE_NGN, TRAVELS247_EMAIL,
-                             TRAVELS247_PASSWORD, ELEVENLABS_TOOL_SECRET,
-                             GROQ_API_KEY, GUIDED_MODE)
+from FareBeep.config import (ADMIN_TOKEN, APP_BASE_URL, CONSENT_VERSION,
+                             MESSAGING_PROVIDER, META_APP_SECRET,
+                             META_VERIFY_TOKEN, REQUOTE_TOLERANCE_NGN,
+                             TRAVELS247_EMAIL, TRAVELS247_PASSWORD,
+                             ELEVENLABS_TOOL_SECRET, GROQ_API_KEY, GUIDED_MODE)
 from FareBeep.database import SessionLocal, init_db
 from FareBeep.iata import city_name, resolve_iata
-from FareBeep.models import BookingSession, ProcessedMessage, User, utcnow
+from FareBeep.models import (BookingSession, DeliveryReceipt,
+                             ProcessedMessage, Subscription, User, utcnow)
 from FareBeep.notifier import MetaWhatsapp, get_notifier
 from FareBeep.payments import verify_paystack_signature
 from FareBeep.search import LedgerOnlyEngine, LedgerSearch
@@ -62,6 +69,12 @@ logger = logging.getLogger("farebeep.main")
 app = FastAPI(title="FareBeep - Transactional Utility")
 
 notifier = get_notifier()
+
+# Which brain answered, this process. Ops-visible via GET /admin/ops so a
+# silently-degrading Groq key (fallback storms) shows up instead of hiding
+# in per-request logs. Per-process counters reset on restart - direction,
+# not billing.
+_agent_stats = {"groq_ok": 0, "groq_fail": 0, "guided_turns": 0}
 
 # Per-chat conversational memory lives in the `chat_state` table (see
 # FareBeep/chatstate.py) - NOT in RAM, so it survives deploys/restarts and
@@ -1027,11 +1040,14 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                 try:
                     _say(phone, fare_agent.agent_reply(db, user, text),
                          user.name, humanized=True)
+                    _agent_stats["groq_ok"] += 1
                     return
                 except Exception as e:
+                    _agent_stats["groq_fail"] += 1
                     logger.warning("Groq agent failed (%s) - guided "
                                    "fallback: %s", phone, e)
                     guided = True
+            _agent_stats["guided_turns"] += 1
 
             intent = brain.parse_intent(text, force_local=guided)
             logger.info("Intent=%s payload=%s phone=%s",
@@ -1923,6 +1939,105 @@ def _telegram_typing(chat_id: str) -> None:
 @app.get("/webhook/telegram")
 async def telegram_verify(request: Request):
     return PlainTextResponse("FareBeep Telegram webhook is live")
+
+
+# ---------------------------------------------------------------------------
+# Admin ops - dead-letter visibility + replay (X-Admin-Token guarded)
+# ---------------------------------------------------------------------------
+def _admin_ok(request: Request) -> bool:
+    """Shared-secret gate. ADMIN_TOKEN unset = the admin surface stays
+    closed; 404 (not 403) so the endpoint's existence isn't advertised."""
+    expected = ADMIN_TOKEN or ""
+    if not expected:
+        return False
+    provided = request.headers.get("X-Admin-Token", "")
+    return bool(provided) and hmac.compare_digest(expected, provided)
+
+
+@app.get("/admin/ops")
+def admin_ops(request: Request):
+    """One ops snapshot: inbound dispatch health, dead letters, outbound
+    receipts, beeps, bookings, and which brain answered. Read-only."""
+    if not _admin_ok(request):
+        return Response(status_code=404)
+    db = SessionLocal()
+    try:
+        inbound = dict(db.query(
+            ProcessedMessage.status, func.count(ProcessedMessage.message_id)
+        ).group_by(ProcessedMessage.status).all())
+        from datetime import timedelta
+        stale_queued = db.query(ProcessedMessage).filter(
+            ProcessedMessage.status == "queued",
+            ProcessedMessage.created_at < utcnow() - timedelta(minutes=5)
+        ).count()
+        dead_rows = db.query(ProcessedMessage).filter(
+            ProcessedMessage.status == "failed"
+        ).order_by(ProcessedMessage.created_at.desc()).limit(20).all()
+        dead = [{
+            "message_id": r.message_id,
+            "phone": r.phone,
+            "attempts": r.attempts,
+            "last_error": (r.last_error or "")[:300],
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "replayable": bool((r.payload or {}).get("message_id")),
+        } for r in dead_rows]
+        receipts = dict(db.query(
+            DeliveryReceipt.status, func.count(DeliveryReceipt.message_id)
+        ).group_by(DeliveryReceipt.status).all())
+        subs = db.query(Subscription).all()
+        bookings = db.query(BookingSession.status,
+                            func.count(BookingSession.id)
+                            ).group_by(BookingSession.status).all()
+        return {
+            "inbound": {"by_status": inbound, "stale_queued_5m": stale_queued},
+            "dead_letters_recent": dead,
+            "delivery_receipts": {"by_status": receipts},
+            "beeps": {
+                "total": len(subs),
+                "active": sum(1 for s in subs if not s.paused),
+                "paused": sum(1 for s in subs if s.paused),
+            },
+            "bookings": {str(getattr(k, "value", k)): v for k, v in bookings},
+            "agent_this_process": dict(_agent_stats),
+        }
+    finally:
+        db.close()
+
+
+@app.post("/admin/ops/dead-letters/{message_id}/replay")
+def admin_replay_dead_letter(message_id: str, request: Request):
+    """Re-dispatch one dead-lettered inbound from its stored payload,
+    through the exact recovery path (per-phone lock, single turn).
+    Synchronous on purpose: the caller sees the new terminal state."""
+    if not _admin_ok(request):
+        return Response(status_code=404)
+    db = SessionLocal()
+    try:
+        row = db.query(ProcessedMessage).filter(
+            ProcessedMessage.message_id == message_id).first()
+        if row is None or row.status != "failed":
+            return JSONResponse({"replayed": False,
+                                 "reason": "not a dead letter"}, status_code=404)
+        payload = row.payload or {}
+        if not payload.get("message_id"):
+            return JSONResponse({"replayed": False,
+                                 "reason": "no stored payload (pre-recovery row)"})
+        m = _restore_message(payload)
+        phone = m.from_number or row.phone or ""
+        if not phone:
+            return JSONResponse({"replayed": False,
+                                 "reason": "no phone on payload"})
+        with _phone_lock(phone):
+            try:
+                _dispatch_single(m)
+                _mark_processed(m.message_id, "done")
+                return {"replayed": True, "message_id": m.message_id}
+            except Exception as e:
+                _mark_processed(m.message_id, "failed", error=f"replay: {e}")
+                return JSONResponse({"replayed": False,
+                                     "reason": str(e)[:300]})
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------

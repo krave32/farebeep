@@ -156,6 +156,10 @@ PAYSTACK_FEE_CAP_NAIRA = _get_float("PAYSTACK_FEE_CAP_NAIRA", 2000.0)
 # Who gets the "Refund Required" alert when a payment lands after the
 # 10-minute window closed (a phone number or Telegram chat_id as string).
 ADMIN_ALERT_PHONE = _get("ADMIN_ALERT_PHONE")
+# Ops visibility: /admin/ops + dead-letter replay require the X-Admin-Token
+# header to match this shared secret. Unset = the admin surface stays CLOSED
+# (404) - flip it on only where you can keep the value secret.
+ADMIN_TOKEN = _get("ADMIN_TOKEN")
 STATUS_WATCH_LEAD_HOURS = _get_int("STATUS_WATCH_LEAD_HOURS", 3)
 STATUS_POLL_SECONDS = _get_int("STATUS_POLL_SECONDS", 300)
 # APScheduler worker (--scheduled mode): how often the TRACKING checks
