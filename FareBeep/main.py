@@ -1819,8 +1819,8 @@ def _send_fare_cards(user: User, fares: list, origin_iata: str,
     logo on top, price under, Book + Set-alert buttons. idx is 1-based
     so taps reuse the "reply 1, 2, 3" pick gate; a lone fare uses the
     bare BOOK / last_fare context instead."""
-    if not isinstance(notifier, MetaWhatsapp):
-        return
+    if not hasattr(notifier, "send_interactive_card"):
+        return  # non-Meta channel (Telegram/Twilio) - keep the text reply
     single = len(fares) == 1
     for i, fare in enumerate(fares[:3], start=1):
         idx = 0 if single else i
