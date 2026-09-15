@@ -1015,6 +1015,70 @@ def _handle_stop(db, user: User) -> None:
 
 
 # ---------------------------------------------------------------------------
+# "My tickets" - secure browser ticket lookup. The chat mints a short-lived
+# HMAC-signed link; the browser (WhatsApp's in-app webview included) renders
+# the user's bookings and price beeps. No cookies needed - the signed token
+# IS the session, so the page must stay read-only.
+# ---------------------------------------------------------------------------
+_TICKET_LINK_TTL = 900            # 15 minutes
+_MY_TRIPS_PHRASES = frozenset({
+    "my bookings", "my booking", "my tickets", "my ticket", "my trips",
+    "my trip", "view tickets", "view ticket", "check tickets", "check ticket",
+    "view bookings", "check bookings", "my beeps", "my alerts",
+})
+
+
+def _ticket_link_token(phone: str) -> str:
+    """base64url(phone.expiry.hmac) - signature keyed on META_APP_SECRET."""
+    import base64
+    import hashlib
+    import hmac
+    exp = int(time.time()) + _TICKET_LINK_TTL
+    payload = f"{phone}.{exp}"
+    sig = hmac.new((META_APP_SECRET or "farebeep-dev").encode(),
+                   payload.encode(), hashlib.sha256).hexdigest()[:32]
+    return base64.urlsafe_b64encode(
+        f"{payload}.{sig}".encode()).decode().rstrip("=")
+
+
+def _ticket_link_phone(token: str) -> "str | None":
+    """Inverse of _ticket_link_token. None when the signature, expiry or
+    shape is wrong - the caller answers with a generic expired page."""
+    import base64
+    import hashlib
+    import hmac
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        phone, exp, sig = base64.urlsafe_b64decode(
+            padded.encode()).decode().rsplit(".", 2)
+        expect = hmac.new((META_APP_SECRET or "farebeep-dev").encode(),
+                          f"{phone}.{exp}".encode(),
+                          hashlib.sha256).hexdigest()[:32]
+        if not hmac.compare_digest(sig, expect) or int(exp) < time.time():
+            return None
+        return phone
+    except Exception:
+        return None
+
+
+def _handle_my_bookings(db, user: User, text: str) -> bool:
+    """Deterministic 'my tickets' turn: hand out the signed browser link.
+    True = turn handled (agent and brain must not run - the agent must
+    never improvise a token, the link is the user's session)."""
+    flat = (text or "").strip().lower().rstrip("?!.")
+    if flat not in _MY_TRIPS_PHRASES:
+        return False
+    token = _ticket_link_token(user.phone)
+    _say(user.phone,
+         f"🔐 Your secure bookings page (valid 15 minutes):\n"
+         f"{APP_BASE_URL}/tickets?t={token}\n\n"
+         f"Anyone holding this link can see your bookings, so keep it "
+         f"private. Ask again anytime for a fresh one.",
+         user.name)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Per-phone rate limit (anti-abuse): one chatty number must not burn Groq
 # tokens and live fare searches for everyone else. Sliding 60s window,
 # per process (restarts reset it - that is fine for burst control).
@@ -1143,6 +1207,8 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                 _handle_stop(db, user)
                 return
             if _handle_manage(db, user, text):
+                return
+            if _handle_my_bookings(db, user, text):
                 return
             if GROQ_API_KEY and not guided:
                 from FareBeep import agent as fare_agent
@@ -2714,6 +2780,99 @@ def booking_confirm(session_id: uuid.UUID):
                                 status_code=303)
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# "My tickets" page - the read-only browser view behind the signed chat
+# link. Mobile-first (it opens in WhatsApp's in-app webview): no cookies,
+# no JS, no lateral links - the token is the session.
+# ---------------------------------------------------------------------------
+@app.get("/tickets", include_in_schema=False)
+def tickets_page(t: str = ""):
+    phone = _ticket_link_phone(t)
+    if not phone:
+        return HTMLResponse("""<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Link expired - FareBeep</title></head>
+<body style="font-family:system-ui,sans-serif;background:#0b1220;color:#e8eefc;
+display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
+<div style="text-align:center;padding:24px">
+<div style="font-size:40px">⏳</div>
+<h1 style="font-size:20px">Link expired</h1>
+<p style="color:#8fa3c8">Ask the FareBeep bot on WhatsApp again - say
+<b>my bookings</b> - and you'll get a fresh one.</p>
+</div></body></html>""", status_code=403)
+
+    from FareBeep.transactions import pnr_from_ref
+    from FareBeep.models import Subscription
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.phone == phone).first()
+        if not user:
+            body_rows = "<p style='color:#8fa3c8'>No account found.</p>"
+        else:
+            bookings = (db.query(BookingSession)
+                        .filter(BookingSession.user_id == user.user_id)
+                        .order_by(BookingSession.created_at.desc())
+                        .limit(20).all())
+            beeps = (db.query(Subscription)
+                     .filter(Subscription.user_id == user.user_id)
+                     .all())
+            rows = []
+            for b in bookings:
+                if b.status == "paid":
+                    badge = "<span style='color:#5ad19b'>● Ticket confirmed</span>"
+                    pnr = pnr_from_ref(b.payment_ref)
+                    ref = f"PNR <b>{pnr}</b> · ref {b.payment_ref}"
+                elif b.status == "pending":
+                    badge = "<span style='color:#f5c451'>○ Awaiting payment</span>"
+                    ref = f"ref {b.payment_ref}"
+                else:
+                    badge = "<span style='color:#8fa3c8'>✕ Closed</span>"
+                    ref = f"ref {b.payment_ref}"
+                rows.append(
+                    f"<div class='card'><div class='route'>{b.origin} → "
+                    f"{b.destination}</div>"
+                    f"<div class='meta'>📅 {b.flight_date or '—'} · "
+                    f"₦{b.total_price:,.0f}</div>"
+                    f"<div class='meta'>{badge} · {ref}</div></div>")
+            if not rows:
+                rows.append("<p style='color:#8fa3c8'>No bookings yet - "
+                            "search a fare in the chat and book one.</p>")
+            if beeps:
+                rows.append("<h2 style='font-size:16px;margin-top:24px'>"
+                            "Price beeps</h2>")
+                for s in beeps:
+                    state = "paused" if s.paused else "watching"
+                    tgt = f" · below ₦{s.target_price:,.0f}" if s.target_price else ""
+                    rows.append(
+                        f"<div class='card'><div class='route'>{s.origin} → "
+                        f"{s.destination}</div><div class='meta'>"
+                        f"<span style='color:#5ad19b'>●</span> {state}"
+                        f"{tgt} · until {s.target_date}</div></div>")
+            body_rows = "".join(rows)
+    finally:
+        db.close()
+
+    html = f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My bookings - FareBeep</title>
+<style>
+body{{font-family:system-ui,sans-serif;background:#0b1220;color:#e8eefc;
+margin:0;padding:24px 16px;max-width:480px;margin-inline:auto}}
+h1{{font-size:20px}} .card{{background:#141d33;border-radius:12px;
+padding:14px 16px;margin:10px 0}} .route{{font-weight:700;font-size:17px}}
+.meta{{color:#8fa3c8;font-size:13px;margin-top:4px}}
+.sec{{color:#8fa3c8;font-size:12px;margin-top:24px;text-align:center}}
+</style></head><body>
+<h1>🔐 My bookings</h1>
+<p style="color:#8fa3c8;font-size:13px">Signed in as {phone} · read-only view</p>
+{body_rows}
+<p class="sec">Link expires after 15 minutes · FareBeep</p>
+</body></html>"""
+    return HTMLResponse(html)
 
 
 # ---------------------------------------------------------------------------
