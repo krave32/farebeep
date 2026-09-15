@@ -578,8 +578,83 @@ def _dispatch_single(msg) -> None:
         _handle_incoming_message(
             phone, str(tap[1]) if tap[0] == "pick" else "BOOK")
         return
+    if msg.message_type == MessageType.DOCUMENT:
+        _handle_boarding_pass(phone, msg)
+        return
     logger.info("Inbound %s from %s needs no concierge turn - ignored",
                 msg.message_type, phone)
+
+
+_MAX_PASS_BYTES = 8 * 1024 * 1024   # boarding passes are small; be strict
+
+
+def _download_whatsapp_media(media_id: str) -> "tuple[bytes, str] | None":
+    """Fetch media bytes from Meta's Graph API. Returns (bytes, mime)."""
+    import httpx
+    from FareBeep.config import META_API_VERSION, META_ACCESS_TOKEN
+    try:
+        with httpx.Client(timeout=30) as client:
+            meta = client.get(
+                f"https://graph.facebook.com/{META_API_VERSION}/{media_id}",
+                headers={"Authorization": f"Bearer {META_ACCESS_TOKEN}"},
+            )
+            meta.raise_for_status()
+            url = meta.json().get("url")
+            if not url:
+                return None
+            blob = client.get(
+                url, headers={"Authorization": f"Bearer {META_ACCESS_TOKEN}"})
+            blob.raise_for_status()
+            return blob.content, meta.json().get("mime_type", "")
+    except Exception as e:
+        logger.warning("Media download failed for %s: %s", media_id, e)
+        return None
+
+
+def _handle_boarding_pass(phone: str, msg) -> None:
+    """Store an airline-issued boarding pass (PDF or screenshot) the user
+    forwarded in chat, attached to their most recent PAID booking."""
+    from FareBeep.models import BookingSession, utcnow
+    media_id = msg.media_id or ""
+    if not media_id:
+        return
+    got = _download_whatsapp_media(media_id)
+    if got is None:
+        _say(phone, "I couldn't download that file - please try sending "
+                    "it again.", None)
+        return
+    blob, mime = got
+    if len(blob) > _MAX_PASS_BYTES:
+        _say(phone, "That file is too large to store. Send the PDF "
+                    "boarding pass (or a screenshot) instead.", None)
+        return
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.phone == phone).first()
+        booking = None
+        if user:
+            booking = (db.query(BookingSession)
+                       .filter(BookingSession.user_id == user.user_id,
+                               BookingSession.status == "paid")
+                       .order_by(BookingSession.created_at.desc())
+                       .first())
+        if not booking:
+            _say(phone, "I don't have a confirmed ticket to attach this "
+                        "to yet. Book a flight first, then forward the "
+                        "boarding pass here.", None)
+            return
+        booking.boarding_pass_blob = blob
+        booking.boarding_pass_name = msg.media_filename or "boarding-pass"
+        booking.boarding_pass_mime = (msg.media_mime or mime or
+                                      "application/pdf")
+        db.commit()
+        _say(phone,
+             f"🎫 Boarding pass saved to your {booking.origin} → "
+             f"{booking.destination} booking. View it anytime - "
+             f"just say 'my bookings'.",
+             user.name if user else None)
+    finally:
+        db.close()
 
 
 def _send_beep_flow(phone: str) -> None:
@@ -2868,7 +2943,13 @@ display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0
                     f"₦{b.total_price:,.0f}</div>"
                     f"<div class='meta'>{badge} · {ref}</div>"
                     + (f"<div class='meta' style='margin-top:10px'>{cta}</div>"
-                       if cta else "") + "</div>")
+                       if cta else "")
+                    + (f"<div class='meta' style='margin-top:10px'>"
+                       f"<a class='btn' style='background:#1c2a47' "
+                       f"href='/tickets/pass?t={t}&amp;b={b.id}'>"
+                       f"🎫 Boarding pass · {b.boarding_pass_name}</a></div>"
+                       if b.boarding_pass_blob else "")
+                    + "</div>")
             if not rows:
                 rows.append("<p style='color:#8fa3c8'>No bookings yet - "
                             "search a fare in the chat and book one.</p>")
@@ -2908,6 +2989,45 @@ padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600}}
 <p class="sec">Link expires after 15 minutes · FareBeep</p>
 </body></html>"""
     return HTMLResponse(html)
+
+
+# ---------------------------------------------------------------------------
+# Boarding-pass download - same signed-link session as /tickets, scoped to
+# one booking; the link token's phone must own the booking.
+# ---------------------------------------------------------------------------
+@app.get("/tickets/pass", include_in_schema=False)
+def boarding_pass(t: str = "", b: str = ""):
+    phone = _ticket_link_phone(t)
+    if not phone:
+        return HTMLResponse("Link expired - ask the bot for a fresh one.",
+                            status_code=403)
+    import uuid as _uuid
+    from FareBeep.models import BookingSession
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.phone == phone).first()
+        booking = None
+        if user:
+            try:
+                bid = _uuid.UUID(b)
+            except ValueError:
+                bid = None
+            if bid:
+                booking = (db.query(BookingSession)
+                           .filter(BookingSession.id == bid,
+                                   BookingSession.user_id == user.user_id)
+                           .first())
+        if not booking or not booking.boarding_pass_blob:
+            return HTMLResponse("No boarding pass on file for this booking.",
+                                status_code=404)
+        from fastapi.responses import Response as FastResponse
+        return FastResponse(
+            content=booking.boarding_pass_blob,
+            media_type=booking.boarding_pass_mime or "application/pdf",
+            headers={"Content-Disposition":
+                     f'inline; filename="{booking.boarding_pass_name}"'})
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------

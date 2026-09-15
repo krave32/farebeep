@@ -12,6 +12,7 @@ class MessageType(str, Enum):
     LIST_REPLY = "list_reply"
     FLOW_RESPONSE = "flow_response"
     INTERACTIVE = "interactive"
+    DOCUMENT = "document"
     UNSUPPORTED = "unsupported"
     STATUS_UPDATE = "status_update"
     UNKNOWN = "unknown"
@@ -30,6 +31,9 @@ class InboundMessage:
     list_title: str | None = None
     flow_token: str | None = None
     flow_data: dict[str, Any] | None = None
+    media_id: str | None = None
+    media_filename: str | None = None
+    media_mime: str | None = None
 
 def classify_message(entry: dict[str, Any]) -> list[InboundMessage]:
     messages = []
@@ -83,7 +87,17 @@ def _parse(msg: dict) -> InboundMessage | None:
             return base
         base.message_type = MessageType.INTERACTIVE
         return base
-    if t in ("image", "document", "audio", "video"):
+    if t in ("document", "image"):
+        # Boarding-pass capture: airlines hand out PDFs (document) and
+        # users screenshot them (image) - both are storable media.
+        media = msg.get(t, {})
+        base.message_type = MessageType.DOCUMENT
+        base.media_id = media.get("id", "")
+        base.media_filename = (media.get("filename")
+                               or media.get("caption") or "boarding-pass")
+        base.media_mime = media.get("mime_type", "")
+        return base
+    if t in ("audio", "video"):
         base.message_type = MessageType.UNSUPPORTED
         return base
     return base

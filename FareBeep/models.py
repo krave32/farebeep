@@ -22,6 +22,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (Boolean, Column, DateTime, Float, ForeignKey, Integer,
+                        LargeBinary,
                         JSON, String, Text, Uuid, UniqueConstraint)
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -189,6 +190,11 @@ class BookingSession(Base):
     callback_url = Column(String, nullable=True)
     paid_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
+    # Boarding-pass capture: the user forwards the airline-issued pass
+    # (PDF or screenshot) to the bot; bytes live here (small files only).
+    boarding_pass_blob = Column(LargeBinary, nullable=True)
+    boarding_pass_name = Column(String, nullable=True)
+    boarding_pass_mime = Column(String, nullable=True)
 
     user = relationship("User", back_populates="booking_sessions")
 
