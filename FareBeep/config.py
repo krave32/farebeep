@@ -160,6 +160,13 @@ ADMIN_ALERT_PHONE = _get("ADMIN_ALERT_PHONE")
 # header to match this shared secret. Unset = the admin surface stays CLOSED
 # (404) - flip it on only where you can keep the value secret.
 ADMIN_TOKEN = _get("ADMIN_TOKEN")
+
+# --- Anti-abuse -------------------------------------------------------------
+# Per-phone inbound throttle: sliding 60-second window. Over the limit the
+# user gets ONE polite cooldown note per window, then silence (replying to
+# every burst message rewards the burst). STOP/unsubscribe is NEVER
+# throttled - opting out must always work, even mid-flood.
+RATE_LIMIT_PER_MIN = _get_int("RATE_LIMIT_PER_MIN", 20)
 STATUS_WATCH_LEAD_HOURS = _get_int("STATUS_WATCH_LEAD_HOURS", 3)
 STATUS_POLL_SECONDS = _get_int("STATUS_POLL_SECONDS", 300)
 # APScheduler worker (--scheduled mode): how often the TRACKING checks

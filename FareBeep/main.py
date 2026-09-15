@@ -36,6 +36,7 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 
 from pathlib import Path
@@ -49,9 +50,10 @@ from sqlalchemy import func
 from FareBeep import brain, cards, chatstate
 from FareBeep.config import (ADMIN_TOKEN, APP_BASE_URL, CONSENT_VERSION,
                              MESSAGING_PROVIDER, META_APP_SECRET,
-                             META_VERIFY_TOKEN, REQUOTE_TOLERANCE_NGN,
-                             TRAVELS247_EMAIL, TRAVELS247_PASSWORD,
-                             ELEVENLABS_TOOL_SECRET, GROQ_API_KEY, GUIDED_MODE)
+                             META_VERIFY_TOKEN, RATE_LIMIT_PER_MIN,
+                             REQUOTE_TOLERANCE_NGN, TRAVELS247_EMAIL,
+                             TRAVELS247_PASSWORD, ELEVENLABS_TOOL_SECRET,
+                             GROQ_API_KEY, GUIDED_MODE)
 from FareBeep.database import SessionLocal, init_db
 from FareBeep.iata import city_name, resolve_iata
 from FareBeep.models import (BookingSession, DeliveryReceipt,
@@ -943,8 +945,46 @@ def _handle_stop(db, user: User) -> None:
 # alerts usage. _tap_alert keeps its own index+context resolution.
 
 
+# ---------------------------------------------------------------------------
+# Per-phone rate limit (anti-abuse): one chatty number must not burn Groq
+# tokens and live fare searches for everyone else. Sliding 60s window,
+# per process (restarts reset it - that is fine for burst control).
+# Over the limit: ONE polite cooldown note per window, then silence -
+# replying to every burst message rewards the burst. STOP/unsubscribe is
+# NEVER throttled: opting out must always work, even mid-flood.
+# ---------------------------------------------------------------------------
+_RATE_LIMIT = RATE_LIMIT_PER_MIN      # module global so ops/tests can tune
+_RATE_WINDOW = 60.0                   # seconds
+_rate_hits: dict = {}                 # phone -> [monotonic hit timestamps]
+_rate_cooled: dict = {}               # phone -> monotonic ts of last note
+_COOLDOWN_TEXT = ("Easy o! 😅 You dey move fast - abeg wait small, "
+                  "then try again. (Reply STOP anytime to opt out.)")
+
+
+def _rate_allow(phone: str, text: str) -> bool:
+    """True = process the message. False = throttled (cooldown already
+    handled). Uses time.monotonic so wall-clock jumps never un-throttle
+    a flooder."""
+    if _is_stop_request(text):
+        return True
+    now = time.monotonic()
+    hits = [t for t in _rate_hits.get(phone, [])
+            if now - t < _RATE_WINDOW]
+    if len(hits) >= _RATE_LIMIT:
+        _rate_hits[phone] = hits
+        if now - _rate_cooled.get(phone, -_RATE_WINDOW) >= _RATE_WINDOW:
+            _rate_cooled[phone] = now
+            _say(phone, _COOLDOWN_TEXT)
+        return False
+    hits.append(now)
+    _rate_hits[phone] = hits
+    return True
+
+
 def _handle_incoming_message(phone: str, text: str) -> None:
     """PASS 2 - CONCIERGE LOGIC: intent -> ask / search / act -> reply."""
+    if not _rate_allow(phone, text):
+        return
     db = SessionLocal()
     try:
         try:
