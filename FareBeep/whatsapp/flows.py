@@ -58,7 +58,12 @@ def _decrypt_request(body: bytes) -> tuple[dict, tuple[bytes, bytes] | None]:
     iv = base64.b64decode(envelope.get("initial_vector")
                           or envelope.get("iv") or "")
     blob = base64.b64decode(envelope["encrypted_flow_data"])
-    payload = json.loads(AESGCM(aes_key).decrypt(iv, blob, None))
+    try:
+        payload = json.loads(AESGCM(aes_key).decrypt(iv, blob, None))
+    except Exception as exc:
+        # Documented behavior: undecryptable requests answer HTTP 421 so
+        # Meta re-keys instead of retrying into the void.
+        raise HTTPException(421, "Flow request decryption failed") from exc
     return payload, (aes_key, iv)
 
 
@@ -158,7 +163,8 @@ async def flow_data_exchange(request: Request):
     logger.info("Flow: action=%s screen=%s", action, screen)
 
     if action == "ping":
-        return _encrypt_response(aes_key, {"data": {"status": "art"}})
+        # Meta's current docs expect "active" (the legacy value was "art").
+        return _encrypt_response(aes_key, {"data": {"status": "active"}})
 
     if action == "INIT":
         # Flow opened. Meta sends screen="" - the endpoint picks the

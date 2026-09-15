@@ -68,10 +68,10 @@ def _post_flow(client, payload):
 
 
 # -- Q1: ping + screen data -------------------------------------------------
-def test_ping_answers_art(client):
+def test_ping_answers_active(client):
     r = _post_flow(client, {"version": "3.0", "action": "ping"})
     assert r.status_code == 200
-    assert r.json() == {"data": {"status": "art"}}
+    assert r.json() == {"data": {"status": "active"}}
 
 
 def test_init_picks_first_screen(client):
@@ -213,7 +213,7 @@ def test_encrypted_roundtrip(client, monkeypatch, rsa_keypair):
 
 def test_encrypted_ping_roundtrip(client, monkeypatch, rsa_keypair):
     # Meta's health check: encrypted {"version":"3.0","action":"ping"}
-    # must answer the encrypted {"data": {"status": "art"}}
+    # must answer the encrypted {"data": {"status": "active"}}
     priv, pub = rsa_keypair
     import FareBeep.config as config
     monkeypatch.setattr(config, "FLOW_PRIVATE_KEY", priv)
@@ -222,7 +222,7 @@ def test_encrypted_ping_roundtrip(client, monkeypatch, rsa_keypair):
                     headers={"Content-Type": "application/json"})
     assert r.status_code == 200
     payload = _decrypt_response(aes_key, iv, r.content)
-    assert payload == {"data": {"status": "art"}}
+    assert payload == {"data": {"status": "active"}}
 
 
 def test_plaintext_rejected_when_key_set(client, monkeypatch, rsa_keypair):
