@@ -98,7 +98,7 @@ def _complete_payload(token="beep:+2348010000001:123",
     return {"version": "3.0", "action": "COMPLETE",
             "screen": "SET_BEEP_REVIEW", "flow_token": token,
             "origin": origin, "destination": destination,
-            "departure_date": FUTURE_DATE, "passengers": "1", **kw}
+            "departure_date": FUTURE_DATE, **kw}
 
 
 def test_complete_creates_watch(client, session_factory):
@@ -252,7 +252,7 @@ def test_webhook_flow_response_creates_watch(client, monkeypatch,
     body = json.dumps(_nfm_payload(
         f"nfm-{uuid.uuid4()}", "beep:2348010000009:77",
         {"origin": "los", "destination": "abv",
-         "departure_date": FUTURE_DATE, "passengers": "2"})).encode()
+         "departure_date": FUTURE_DATE})).encode()
     r = client.post("/webhook/meta", content=body,
                     headers={"X-Hub-Signature-256": _sign(body)})
     assert r.status_code == 200
@@ -277,7 +277,7 @@ def test_webhook_flow_response_idempotent_with_endpoint(client,
     body = json.dumps(_nfm_payload(
         f"nfm-{uuid.uuid4()}", "beep:2348010000009:77",
         {"origin": "LOS", "destination": "ABV",
-         "departure_date": FUTURE_DATE, "passengers": "1"})).encode()
+         "departure_date": FUTURE_DATE})).encode()
     r = client.post("/webhook/meta", content=body,
                     headers={"X-Hub-Signature-256": _sign(body)})
     assert r.status_code == 200

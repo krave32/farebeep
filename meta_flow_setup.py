@@ -51,22 +51,24 @@ def main() -> None:
     env = load_env()
     ver = env["META_API_VERSION"]
 
-    # 1. WABA id: explicit WABA_ID env wins (the phone-node lookup hides the
-    # WABA field for some system-user tokens even when direct access works).
+    # 1. WABA id: explicit WABA_ID env wins. Only resolved when CREATING a
+    # flow - the phone-node lookup can 400 on some tokens.
     waba = os.environ.get("WABA_ID")
     if waba:
         print(f"WABA (from WABA_ID): {waba}")
-    else:
-        info = call(env, f"{env['META_PHONE_NUMBER_ID']}?fields=id,whatsapp_business_account")
-        waba = info["whatsapp_business_account"]["id"]
-        print(f"WABA (via phone node): {waba}")
 
     flow_id = None
     if len(sys.argv) > 1:
         flow_id = sys.argv[1]
         print(f"Using existing flow: {flow_id}")
     else:
-        # 2. Create the flow (draft, category OTHER)
+        # WABA is only needed to CREATE a flow; the phone-node lookup can
+        # 400 on some tokens, so resolve it lazily here.
+        if waba is None:
+            info = call(env, f"{env['META_PHONE_NUMBER_ID']}?fields=id,whatsapp_business_account")
+            waba = info["whatsapp_business_account"]["id"]
+            print(f"WABA (via phone node): {waba}")
+        # Create the flow (draft, category OTHER)
         body = json.dumps({"name": "farebeep_set_beep", "categories": ["OTHER"]}).encode()
         req = urllib.request.Request(
             f"https://graph.facebook.com/{ver}/{waba}/flows",

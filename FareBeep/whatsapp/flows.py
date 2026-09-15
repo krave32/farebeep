@@ -104,11 +104,9 @@ def _validate_beep(d: dict) -> str | None:
             return "Date cannot be in the past."
     except (ValueError, TypeError):
         return "Invalid date."
-    try:
-        p = int(d.get("passengers") or 1)   # Dropdown yields strings
-    except (TypeError, ValueError):
-        return "Passengers: 1–9."
-    if not 1 <= p <= 9: return "Passengers: 1–9."
+    # NOTE: no passenger count here on purpose - a price alert is per
+    # seat; pax only matters at booking time (token BOOK path asks for
+    # adults/children where it is actually used).
     return None
 
 
