@@ -653,8 +653,33 @@ def _handle_boarding_pass(phone: str, msg) -> None:
              f"{booking.destination} booking. View it anytime - "
              f"just say 'my bookings'.",
              user.name if user else None)
+        _email_boarding_pass(booking)
     finally:
         db.close()
+
+
+def _email_boarding_pass(booking) -> None:
+    """Email the captured boarding pass back so the user keeps a copy
+    outside WhatsApp. PDFs/screenshot bytes only; best-effort."""
+    try:
+        from FareBeep import emailer
+        if not (emailer.is_configured() and booking.contact_email
+                and booking.boarding_pass_blob):
+            return
+        emailer.send_email(
+            booking.contact_email,
+            "Your FareBeep boarding pass - "
+            f"{booking.origin} -> {booking.destination}",
+            "Boarding pass attached (a copy of what you forwarded in "
+            "chat). Safe travels!\n- FareBeep",
+            attachment={"filename": booking.boarding_pass_name
+                        or "boarding-pass",
+                        "content_bytes": booking.boarding_pass_blob,
+                        "mime": booking.boarding_pass_mime
+                        or "application/pdf"})
+    except Exception as e:  # noqa: BLE001
+        logger.error("Boarding pass email failed for %s: %s",
+                     booking.payment_ref, e)
 
 
 def _send_beep_flow(phone: str) -> None:
@@ -699,10 +724,17 @@ def _handle_flow_completion(phone: str, token: str, data: dict) -> None:
     finally:
         db.close()
     date_label = d.get("departure_date") or "your dates"
-    _say(phone, f"✅ *Your beep is on!* {city_name(origin)} → "
-                f"{city_name(destination)} on {date_label}.\n"
-                f"We'll message you when the fare drops. Reply *my beeps* "
-                f"anytime to manage.")
+    target = _flow_target_price(d)
+    target_label = (f"₦{target:,.0f}" if target
+                    else "any fare drop (we alert from a 10% drop)")
+    _say(phone,
+         "✅ *Your beep is on!* Here's everything you set:\n"
+         f"📍 Route: {city_name(origin)} ({origin}) → "
+         f"{city_name(destination)} ({destination})\n"
+         f"📅 Date: {date_label}\n"
+         f"🎯 Watching for: {target_label}\n"
+         "We'll message you here the moment the fare meets your target. "
+         "Reply *my beeps* anytime to pause, change or drop it.")
 
 
 def _flow_target_price(d: dict):
@@ -1238,6 +1270,12 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                                    picked_fare=pick)
                 return
 
+            # TICKET-DETAILS GATE (before everything else): a paid booking
+            # waiting for passenger name/email - any reply is an answer,
+            # never a new search.
+            if _try_ticket_details_answer(db, user, text):
+                return
+
             # REQUOTE GATE: after "the price moved to ₦X - still lock it?",
             # a bare yes/book answer proceeds with the already-live-quoted
             # fare; a no/cancel politely aborts. Anything naming a city or
@@ -1392,6 +1430,53 @@ def _say(phone: str, msg: str, user_name: str = None,
 _YES_WORDS = {"yes", "yeah", "yep", "y", "sure", "ok", "okay", "alright",
               "book", "lock", "proceed", "confirm", "continue", "go", "ahead"}
 _NO_WORDS = {"no", "nope", "nah", "cancel", "forget", "never", "stop"}
+
+
+def _try_ticket_details_answer(db, user: User, text: str) -> bool:
+    """Chat fallback for ticket-holder details: paid bookings that never
+    went through the /book page form. Two-step ask (name, then email);
+    on completion the voucher PDF + email go out. Returns True when the
+    message was consumed as an answer."""
+    pending = chatstate.get_pending_ticket_details(db, user.phone)
+    if not pending:
+        return False
+    booking = db.get(BookingSession, uuid.UUID(str(pending.get("booking_id"))))
+    if booking is None or booking.status != SessionStatus.PAID.value:
+        chatstate.clear_pending_ticket_details(db, user.phone)
+        return False
+    text = (text or "").strip()
+    if pending.get("stage") == "name":
+        if not text or len(text) > 80 or not re.search(r"[A-Za-z]", text):
+            _say(user.phone,
+                 "Sorry - I need the traveller's full name as it appears "
+                 "on their ID (letters, e.g. Chinedu Okafor).",
+                 user.name)
+            return True
+        pending = {**pending, "stage": "email", "name": text}
+        chatstate.set_pending_ticket_details(db, user.phone, pending)
+        _say(user.phone,
+             f"Thanks, {text}. And the email address the ticket should "
+             f"go to?", user.name)
+        return True
+    # stage == "email"
+    email = text.lower()
+    if not _EMAIL_RE.match(email):
+        _say(user.phone,
+             "That doesn't look like an email address - try again "
+             "(e.g. you@example.com).", user.name)
+        return True
+    booking.passenger_name = pending.get("name") or "Passenger"
+    booking.contact_email = email
+    if not user.email:
+        user.email = email
+    db.commit()
+    chatstate.clear_pending_ticket_details(db, user.phone)
+    pnr = str(pending.get("pnr") or "FB-????")
+    _say(user.phone,
+         f"✅ All set! Ticket for *{booking.passenger_name}* goes to "
+         f"{email}. Here's your voucher:", user.name)
+    _send_ticket_pdf(booking, pnr)
+    return True
 
 
 def _try_requote_answer(db, user: User, text: str) -> bool:
@@ -2619,11 +2704,13 @@ def _notify_session_user(session, text: str) -> None:
 
 
 def _send_ticket_pdf(session, pnr: str) -> None:
-    """Render the booking voucher and push it as a WhatsApp document.
+    """Render the booking voucher, email it (compiled summary in the body)
+    and push it as a WhatsApp document.
     Best-effort: a PDF failure must never mask the paid confirmation."""
     try:
         from FareBeep.ticket_pdf import render_ticket_pdf
         data = render_ticket_pdf(session, pnr, city_name=city_name)
+        _email_voucher(session, pnr, data)
         if not hasattr(notifier, "send_document"):
             logger.info("Channel has no document support - ticket PDF "
                         "skipped for %s", session.payment_ref)
@@ -2643,6 +2730,57 @@ def _send_ticket_pdf(session, pnr: str) -> None:
     except Exception as e:
         logger.error("Ticket PDF send failed for %s: %s",
                      session.payment_ref, e)
+
+
+def _email_voucher(session, pnr: str, pdf: bytes) -> None:
+    """Email the voucher PDF with a compiled booking summary as the body.
+    PDFs only (per product decision); best-effort - never raises."""
+    try:
+        from FareBeep import emailer
+        if not emailer.is_configured() or not session.contact_email:
+            return
+        details = session.flight_details or {}
+        body = (
+            f"Booking confirmed - here's everything on record.\n\n"
+            f"PNR: {pnr}\n"
+            f"Passenger: {session.passenger_name or '—'}\n"
+            f"Route: {city_name(session.origin)} ({session.origin}) -> "
+            f"{city_name(session.destination)} ({session.destination})\n"
+            f"Date: {session.flight_date}\n"
+            f"Airline: {details.get('airline') or '—'}\n"
+            f"Airline price: ₦{session.airline_price:,.0f}\n"
+            f"Markup + fees: ₦{(session.markup or 0) + (session.processing_fee or 0):,.0f}\n"
+            f"TOTAL PAID: ₦{session.total_price:,.0f}\n"
+            f"Paid at: {(session.paid_at or utcnow()).strftime('%Y-%m-%d %H:%M')} UTC\n\n"
+            f"The voucher is attached as a PDF. Safe travels!\n"
+            f"- FareBeep")
+        sent = emailer.send_email(
+            session.contact_email, f"Your FareBeep booking - PNR {pnr}",
+            body, attachment={"filename": f"FareBeep-{pnr}.pdf",
+                              "content_bytes": pdf,
+                              "mime": "application/pdf"})
+        if not sent:
+            logger.info("Voucher email not sent for %s (unconfigured or "
+                        "rejected)", session.payment_ref)
+    except Exception as e:  # noqa: BLE001
+        logger.error("Voucher email failed for %s: %s", session.payment_ref, e)
+
+
+def _ask_ticket_details(db, session, pnr: str) -> None:
+    """Paid booking whose ticket-holder details never arrived (the /book
+    page form was skipped). Park the booking in a two-step chat ask; the
+    voucher goes out once both answers land."""
+    user = db.get(User, session.user_id)
+    if user is None:
+        logger.warning("No user for paid session %s - cannot ask for "
+                       "ticket details", session.payment_ref)
+        return
+    chatstate.set_pending_ticket_details(db, user.phone, {
+        "booking_id": str(session.id), "stage": "name", "pnr": pnr})
+    notifier.send_text(user.phone,
+                       "Almost done with your ticket 🎫 - one detail "
+                       "missing: what's the traveller's full name as it "
+                       "appears on their ID?")
 
 
 @app.post("/webhook/paystack")
@@ -2684,7 +2822,11 @@ async def paystack_webhook(request: Request):
                 f"{session.flight_date}\n"
                 f"Paid: ₦{session.total_price:,.0f}\n"
                 f"{ticket_note} Safe travels!")
-            _send_ticket_pdf(session, pnr)
+            if session.passenger_name and session.contact_email:
+                _send_ticket_pdf(session, pnr)
+            else:
+                # /book page form skipped - collect in chat, then voucher.
+                _ask_ticket_details(db, session, pnr)
         elif outcome["outcome"] == "refund_required":
             _notify_session_user(
                 session,
@@ -2797,11 +2939,12 @@ the latest fare for you.</p>
 </div></body></html>""")
 
 
-def _booking_page(session: BookingSession) -> HTMLResponse:
+def _booking_page(session: BookingSession, user_email: str = None) -> HTMLResponse:
     origin = city_name(session.origin)
     destination = city_name(session.destination)
     airline = (session.flight_details or {}).get("airline") or "—"
     expires = session.expires_at.strftime("%H:%M")
+    email_value = user_email or session.contact_email or ""
     html = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -2819,6 +2962,10 @@ def _booking_page(session: BookingSession) -> HTMLResponse:
  .row.total {{ border-bottom:none; color:#e8eef7; font-weight:700;
                font-size:1.1rem; }}
  .locked {{ font-size:.8rem; color:#6ee7a0; margin:1rem 0; }}
+ label {{ display:block; font-size:.8rem; color:#9fb0c9; margin:.9rem 0 .3rem; }}
+ input {{ width:100%; box-sizing:border-box; background:#0b1220;
+         border:1px solid #26324a; border-radius:10px; color:#e8eef7;
+         padding:.7rem; font-size:.95rem; }}
  .notice {{ background:#101a2c; border:1px solid #26324a; border-radius:10px;
            padding:.9rem; font-size:.8rem; color:#9fb0c9; line-height:1.5;
            margin:1rem 0; }}
@@ -2838,9 +2985,15 @@ def _booking_page(session: BookingSession) -> HTMLResponse:
   <p class="locked">Price locked, valid until {expires} today. Payments after
   the window are auto-refunded.</p>
 
-  <div class="notice">{_CONSENT_TEXT.format(version=CONSENT_VERSION)}</div>
-
   <form method="post" action="/book/{session.id}/confirm">
+    <label for="passenger_name">Passenger full name (as on ID)</label>
+    <input id="passenger_name" name="passenger_name" required
+           maxlength="80" placeholder="e.g. Chinedu Okafor">
+    <label for="contact_email">Email for your ticket</label>
+    <input id="contact_email" name="contact_email" type="email" required
+           maxlength="120" value="{email_value}"
+           placeholder="you@example.com">
+    <div class="notice">{_CONSENT_TEXT.format(version=CONSENT_VERSION)}</div>
     <button type="submit">I agree &amp; Proceed to Payment</button>
   </form>
 </div>
@@ -2857,14 +3010,19 @@ def booking_page(session_id: uuid.UUID):
             return _booking_not_found()
         if _is_expired(session):
             return _booking_closed(session.origin, session.destination)
-        return _booking_page(session)
+        user = db.get(User, session.user_id)
+        return _booking_page(session, user_email=user.email if user else None)
     finally:
         db.close()
 
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
 @app.post("/book/{session_id}/confirm")
-def booking_confirm(session_id: uuid.UUID):
-    """Record NDPA consent for the session's user, then send them to Paystack."""
+async def booking_confirm(session_id: uuid.UUID, request: Request):
+    """Capture ticket-holder details + NDPA consent, then Paystack."""
+    form = dict(await request.form())
     db = SessionLocal()
     try:
         session = db.get(BookingSession, session_id)
@@ -2873,12 +3031,26 @@ def booking_confirm(session_id: uuid.UUID):
         if _is_expired(session):
             return _booking_closed(session.origin, session.destination)
         user = db.get(User, session.user_id)
+        name = str(form.get("passenger_name") or "").strip()[:80]
+        email = str(form.get("contact_email") or "").strip().lower()[:120]
+        if not name or not _EMAIL_RE.match(email):
+            return HTMLResponse(status_code=422, content=(
+                "<!doctype html><meta charset='utf-8'>"
+                "<body style='font-family:system-ui;background:#0b1220;"
+                "color:#e8eef7;padding:2rem'>Please enter a valid "
+                "passenger name and email address. "
+                "<a style='color:#6ee7a0' href='javascript:history.back()'>"
+                "Go back</a>.</body>"))
+        session.passenger_name = name
+        session.contact_email = email
         if user is not None:
             user.consent_at = utcnow()
             user.consent_text_version = CONSENT_VERSION
-            db.commit()
+            if not user.email:
+                user.email = email
             logger.info("Consent recorded v%s for user %s (booking %s)",
                         CONSENT_VERSION, session.user_id, session.payment_ref)
+        db.commit()
         return RedirectResponse(session.callback_url or "/payment/status",
                                 status_code=303)
     finally:

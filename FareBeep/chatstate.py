@@ -94,6 +94,18 @@ def clear_pending_requote(db, phone: str) -> None:
     _write(db, phone, "pending_requote", None)
 
 
+def get_pending_ticket_details(db, phone: str) -> Optional[dict]:
+    return _read(db, phone, "pending_ticket_details")
+
+
+def set_pending_ticket_details(db, phone: str, ctx: dict) -> None:
+    _write(db, phone, "pending_ticket_details", ctx)
+
+
+def clear_pending_ticket_details(db, phone: str) -> None:
+    _write(db, phone, "pending_ticket_details", None)
+
+
 MAX_AGENT_HISTORY = 12   # rolling window: the last ~6 turns
 
 

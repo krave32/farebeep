@@ -71,12 +71,30 @@ def test_page_reconfirms_price_breakdown(client, session_factory):
 def test_confirm_records_consent_and_redirects(client, session_factory):
     db, user, session = _make_session(session_factory)
     assert user.consent_at is None
-    r = client.post(f"/book/{session.id}/confirm", follow_redirects=False)
+    r = client.post(f"/book/{session.id}/confirm",
+                    data={"passenger_name": "Chinedu Okafor",
+                          "contact_email": "chinedu@example.com"},
+                    follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "https://checkout.paystack.com/test-access-code"
     db.refresh(user)
     assert user.consent_at is not None
     assert user.consent_text_version == main.CONSENT_VERSION
+    db.refresh(session)
+    assert session.passenger_name == "Chinedu Okafor"
+    assert session.contact_email == "chinedu@example.com"
+    db.close()
+
+
+def test_confirm_rejects_missing_details(client, session_factory):
+    """The consent gate is closed without ticket-holder details: an empty
+    form gets the 422 page, records no consent and never reaches Paystack."""
+    db, user, session = _make_session(session_factory)
+    r = client.post(f"/book/{session.id}/confirm", follow_redirects=False)
+    assert r.status_code == 422
+    assert "checkout.paystack.com" not in r.headers.get("location", "")
+    db.refresh(user)
+    assert user.consent_at is None
     db.close()
 
 

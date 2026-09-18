@@ -53,6 +53,7 @@ def render_ticket_pdf(session, pnr: str, city_name=None) -> bytes:
     c.drawString(36, h - 170, route)
 
     rows = [
+        ("Passenger", getattr(session, "passenger_name", None) or "-"),
         ("Date", session.flight_date or "-"),
         ("Flight", getattr(session, "flight_iata", None) or "-"),
         ("Fare", f"NGN {session.airline_price:,.0f}"),

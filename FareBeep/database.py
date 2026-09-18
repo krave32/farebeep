@@ -252,6 +252,9 @@ def _apply_additive_migrations() -> None:
         ("booking_sessions", "boarding_pass_blob", "BYTEA"),
         ("booking_sessions", "boarding_pass_name", "TEXT"),
         ("booking_sessions", "boarding_pass_mime", "TEXT"),
+        ("booking_sessions", "passenger_name", "TEXT"),
+        ("booking_sessions", "contact_email", "TEXT"),
+        ("chat_state", "pending_ticket_details", "JSONB"),
     ]
     engine = get_engine()
     with engine.begin() as conn:

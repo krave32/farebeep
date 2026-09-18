@@ -104,6 +104,10 @@ class ChatState(Base):
     pending_requote = Column(JSON, nullable=True)  # {origin_iata, destination_iata,
                                                     #  flight_date, fare} - waiting for the
                                                     #  user's "yes" after a price move
+    pending_ticket_details = Column(JSON, nullable=True)  # {booking_id, stage:
+                                                    #  "name"|"email", pnr} - chat
+                                                    #  fallback collecting ticket-holder
+                                                    #  details the /book page missed
     agent_history = Column(JSON, nullable=True)    # [{role, content}...] - the
                                                     #  Groq agent's rolling chat
                                                     #  memory (last turns only)
@@ -182,6 +186,11 @@ class BookingSession(Base):
     processing_fee = Column(Float)           # Paystack fee (user-funded)
     total_price = Column(Float)              # airline_price + markup + fee
     flight_details = Column(JSON, nullable=True)  # {airline, route, net_price, source}
+    # Ticket-holder details: captured on the /book confirmation page
+    # (chat fallback asks if the page was skipped). contact_email doubles
+    # as the Paystack customer email and the ticket-voucher email address.
+    passenger_name = Column(String, nullable=True)
+    contact_email = Column(String, nullable=True)
     currency = Column(String, default="NGN")
     status = Column(String, default=SessionStatus.PENDING.value)
     expires_at = Column(DateTime(timezone=True))  # card +10m / otherwise +13m
