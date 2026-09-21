@@ -1,3 +1,11 @@
+// Hero scene + brand tilt + lock timer.
+//
+// Performance contract: NOTHING runs a perpetual requestAnimationFrame
+// loop. The 3D tilt runs only while the pointer is over the hero (plus a
+// short ease-out settle after it leaves), the brand logo tilt only while
+// the pointer is over the brand, and the lock timer is a 1s interval.
+// Idle CPU is therefore ~zero - the page costs nothing when untouched.
+
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const art = document.getElementById('hero-art');
@@ -19,6 +27,33 @@ if (art && frame && !reduceMotion) {
 
   let tx = 0, ty = 0, cx = 0, cy = 0;
   let dragging = false, panX = 0, panY = 0, lastX = 0, lastY = 0;
+  let rafId = null, settleTimer = null;
+  const SETTLE_MS = 900;
+
+  function apply() {
+    frame.style.transform = `translate3d(${panX.toFixed(1)}px, ${panY.toFixed(1)}px, 0) rotateX(${(cy * 2.2).toFixed(2)}deg) rotateY(${(cx * 2.5).toFixed(2)}deg)`;
+    for (const l of layers) {
+      l.el.style.transform = `translate3d(${(cx * l.k).toFixed(1)}px, ${(cy * l.k).toFixed(1)}px, ${l.z}px)`;
+    }
+  }
+
+  function tick() {
+    // Ease toward the pointer target. No synthetic idle wobble: when the
+    // pointer rests, the loop converges and stops - zero idle frames.
+    cx += (tx - cx) * 0.12;
+    cy += (ty - cy) * 0.12;
+    apply();
+    if (Math.abs(tx - cx) > 0.001 || Math.abs(ty - cy) > 0.001) {
+      rafId = requestAnimationFrame(tick);
+    } else {
+      cx = tx; cy = ty;      // snap, stop the loop
+      rafId = null;
+    }
+  }
+
+  function wake() {
+    if (rafId === null) rafId = requestAnimationFrame(tick);
+  }
 
   art.addEventListener('pointermove', (e) => {
     const r = art.getBoundingClientRect();
@@ -27,25 +62,19 @@ if (art && frame && !reduceMotion) {
     if (dragging) { panX += e.clientX - lastX; panY += e.clientY - lastY; }
     lastX = e.clientX;
     lastY = e.clientY;
+    wake();
   });
   art.addEventListener('pointerdown', (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
   window.addEventListener('pointerup', () => { dragging = false; });
-  art.addEventListener('pointerleave', () => { tx = 0; ty = 0; });
+  art.addEventListener('pointerleave', () => {
+    tx = 0; ty = 0; wake();
+    // Keep easing back to rest, then fully stop.
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => { tx = 0; ty = 0; }, SETTLE_MS);
+  });
 
-  (function tick() {
-    const t = performance.now() / 1000;
-    const idleX = Math.sin(t * 0.3) * 0.22;
-    const idleY = Math.cos(t * 0.24) * 0.16;
-    const targetX = tx * 0.95 + idleX;
-    const targetY = ty * 0.95 + idleY;
-    cx += (targetX - cx) * 0.055;
-    cy += (targetY - cy) * 0.055;
-    frame.style.transform = `translate3d(${panX.toFixed(1)}px, ${panY.toFixed(1)}px, 0) rotateX(${(cy * 2.2).toFixed(2)}deg) rotateY(${(cx * 2.5).toFixed(2)}deg)`;
-    for (const l of layers) {
-      l.el.style.transform = `translate3d(${(cx * l.k).toFixed(1)}px, ${(cy * l.k).toFixed(1)}px, ${l.z}px)`;
-    }
-    requestAnimationFrame(tick);
-  })();
+  // First paint: sit at rest. No idle animation.
+  apply();
 }
 
 const toast = document.getElementById('toast');
@@ -73,18 +102,27 @@ if (!reduceMotion) {
     const mark = brand.querySelector('.brand-mark');
     if (!mark) continue;
     let bx = 0, by = 0, cx = 0, cy = 0;
+    let rafId = null;
+
+    function tick() {
+      cx += (bx * 9 - cx) * 0.14;
+      cy += (by * 11 - cy) * 0.14;
+      mark.style.transform = `perspective(400px) rotateX(${cy.toFixed(2)}deg) rotateY(${cx.toFixed(2)}deg)`;
+      if (Math.abs(bx * 9 - cx) > 0.01 || Math.abs(by * 11 - cy) > 0.01) {
+        rafId = requestAnimationFrame(tick);
+      } else {
+        rafId = null;
+      }
+    }
+    function wake() { if (rafId === null) rafId = requestAnimationFrame(tick); }
+
     brand.addEventListener('mousemove', (e) => {
       const r = brand.getBoundingClientRect();
       bx = ((e.clientX - r.left) / r.width) * 2 - 1;
       by = -(((e.clientY - r.top) / r.height) * 2 - 1);
+      wake();
     });
-    brand.addEventListener('mouseleave', () => { bx = 0; by = 0; });
-    (function tiltLogo() {
-      cx += (bx * 9 - cx) * 0.14;
-      cy += (by * 11 - cy) * 0.14;
-      mark.style.transform = `perspective(400px) rotateX(${cy.toFixed(2)}deg) rotateY(${cx.toFixed(2)}deg)`;
-      requestAnimationFrame(tiltLogo);
-    })();
+    brand.addEventListener('mouseleave', () => { bx = 0; by = 0; wake(); });
   }
 
   const lockMin = document.getElementById('lock-min');
