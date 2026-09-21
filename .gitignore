@@ -12,3 +12,5 @@ venv/
 .agents/
 skills-lock.json
 fb_assets.py
+# Local agent tool state (per-workspace, not product code)
+.freebuff/
