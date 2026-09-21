@@ -146,7 +146,8 @@ def test_landing_page_served(client):
     assert "Lock the fare" in r.text
     assert "Join on Telegram" in r.text
     assert "The Search Beep" in r.text
-    assert "Zero Price Jumps" in r.text
+    # the highlight-box device splits the phrase across an <em> tag
+    assert "Zero <em>Price Jumps.</em>" in r.text
     assert "SECURED BY PAYSTACK" in r.text
     assert "saved via Ledger" in r.text
     assert client.get("/assets/styles.css").status_code == 200
