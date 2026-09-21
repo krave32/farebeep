@@ -12,3 +12,6 @@ reportlab
 apscheduler
 pytest
 python-multipart
+langchain-core
+langchain-groq
+groq

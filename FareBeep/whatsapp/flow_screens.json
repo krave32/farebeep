@@ -2,8 +2,12 @@
   "version": "7.3",
   "data_api_version": "3.0",
   "routing_model": {
-    "SET_BEEP_TRIP": ["SET_BEEP_DATES"],
-    "SET_BEEP_DATES": ["SET_BEEP_REVIEW"]
+    "SET_BEEP_TRIP": [
+      "SET_BEEP_DATES"
+    ],
+    "SET_BEEP_DATES": [
+      "SET_BEEP_REVIEW"
+    ]
   },
   "screens": [
     {
@@ -17,34 +21,168 @@
             "type": "Form",
             "name": "trip_form",
             "children": [
-              { "type": "TextHeading", "text": "Set a price beep 🔔" },
-              { "type": "TextBody", "text": "Pick your route - we'll watch fares and message you the moment they drop." },
+              {
+                "type": "TextHeading",
+                "text": "Set a price beep \ud83d\udd14"
+              },
+              {
+                "type": "TextBody",
+                "text": "Pick your route - we'll watch fares and message you the moment they drop."
+              },
               {
                 "type": "Dropdown",
                 "name": "origin",
                 "label": "Flying from",
                 "required": true,
                 "data-source": [
-                  { "id": "LOS", "title": "Lagos (LOS)" },
-                  { "id": "ABV", "title": "Abuja (ABV)" },
-                  { "id": "PHC", "title": "Port Harcourt (PHC)" },
-                  { "id": "KAN", "title": "Kano (KAN)" },
-                  { "id": "ENU", "title": "Enugu (ENU)" },
-                  { "id": "BNI", "title": "Benin (BNI)" },
-                  { "id": "CBQ", "title": "Calabar (CBQ)" },
-                  { "id": "ILR", "title": "Ilorin (ILR)" },
-                  { "id": "KAD", "title": "Kaduna (KAD)" },
-                  { "id": "MDI", "title": "Makurdi (MDI)" },
-                  { "id": "MIU", "title": "Maiduguri (MIU)" },
-                  { "id": "MXJ", "title": "Minna (MXJ)" },
-                  { "id": "QOW", "title": "Owerri (QOW)" },
-                  { "id": "SKO", "title": "Sokoto (SKO)" },
-                  { "id": "YOL", "title": "Yola (YOL)" },
-                  { "id": "ABB", "title": "Asaba (ABB)" },
-                  { "id": "AKR", "title": "Akure (AKR)" },
-                  { "id": "IBA", "title": "Ibadan (IBA)" },
-                  { "id": "JOS", "title": "Jos (JOS)" },
-                  { "id": "QRW", "title": "Warri (QRW)" }
+                  {
+                    "id": "LOS",
+                    "title": "Lagos (LOS)"
+                  },
+                  {
+                    "id": "ABV",
+                    "title": "Abuja (ABV)"
+                  },
+                  {
+                    "id": "PHC",
+                    "title": "Port Harcourt (PHC)"
+                  },
+                  {
+                    "id": "ENU",
+                    "title": "Enugu (ENU)"
+                  },
+                  {
+                    "id": "BNI",
+                    "title": "Benin (BNI)"
+                  },
+                  {
+                    "id": "KAN",
+                    "title": "Kano (KAN)"
+                  },
+                  {
+                    "id": "CBQ",
+                    "title": "Calabar (CBQ)"
+                  },
+                  {
+                    "id": "ILR",
+                    "title": "Ilorin (ILR)"
+                  },
+                  {
+                    "id": "QOW",
+                    "title": "Owerri (QOW)"
+                  },
+                  {
+                    "id": "ABB",
+                    "title": "Asaba (ABB)"
+                  },
+                  {
+                    "id": "QUO",
+                    "title": "Uyo (QUO)"
+                  },
+                  {
+                    "id": "SKO",
+                    "title": "Sokoto (SKO)"
+                  },
+                  {
+                    "id": "YOL",
+                    "title": "Yola (YOL)"
+                  },
+                  {
+                    "id": "MIU",
+                    "title": "Maiduguri (MIU)"
+                  },
+                  {
+                    "id": "AKR",
+                    "title": "Akure (AKR)"
+                  },
+                  {
+                    "id": "QRW",
+                    "title": "Warri (QRW)"
+                  },
+                  {
+                    "id": "JOS",
+                    "title": "Jos (JOS)"
+                  },
+                  {
+                    "id": "KAD",
+                    "title": "Kaduna (KAD)"
+                  },
+                  {
+                    "id": "IBA",
+                    "title": "Ibadan (IBA)"
+                  },
+                  {
+                    "id": "ACC",
+                    "title": "Accra (ACC)"
+                  },
+                  {
+                    "id": "ABJ",
+                    "title": "Abidjan (ABJ)"
+                  },
+                  {
+                    "id": "DSS",
+                    "title": "Dakar (DSS)"
+                  },
+                  {
+                    "id": "LFW",
+                    "title": "Lome (LFW)"
+                  },
+                  {
+                    "id": "COO",
+                    "title": "Cotonou (COO)"
+                  },
+                  {
+                    "id": "DLA",
+                    "title": "Douala (DLA)"
+                  },
+                  {
+                    "id": "NSI",
+                    "title": "Yaounde (NSI)"
+                  },
+                  {
+                    "id": "NIM",
+                    "title": "Niamey (NIM)"
+                  },
+                  {
+                    "id": "BKO",
+                    "title": "Bamako (BKO)"
+                  },
+                  {
+                    "id": "ROB",
+                    "title": "Monrovia (ROB)"
+                  },
+                  {
+                    "id": "FNA",
+                    "title": "Freetown (FNA)"
+                  },
+                  {
+                    "id": "LON",
+                    "title": "London (LON)"
+                  },
+                  {
+                    "id": "NYC",
+                    "title": "New York (NYC)"
+                  },
+                  {
+                    "id": "DXB",
+                    "title": "Dubai (DXB)"
+                  },
+                  {
+                    "id": "JED",
+                    "title": "Jeddah (JED)"
+                  },
+                  {
+                    "id": "RUH",
+                    "title": "Riyadh (RUH)"
+                  },
+                  {
+                    "id": "CAI",
+                    "title": "Cairo (CAI)"
+                  },
+                  {
+                    "id": "JNB",
+                    "title": "Johannesburg (JNB)"
+                  }
                 ]
               },
               {
@@ -53,34 +191,169 @@
                 "label": "Flying to",
                 "required": true,
                 "data-source": [
-                  { "id": "ABV", "title": "Abuja (ABV)" },
-                  { "id": "LOS", "title": "Lagos (LOS)" },
-                  { "id": "PHC", "title": "Port Harcourt (PHC)" },
-                  { "id": "KAN", "title": "Kano (KAN)" },
-                  { "id": "ENU", "title": "Enugu (ENU)" },
-                  { "id": "BNI", "title": "Benin (BNI)" },
-                  { "id": "CBQ", "title": "Calabar (CBQ)" },
-                  { "id": "ILR", "title": "Ilorin (ILR)" },
-                  { "id": "KAD", "title": "Kaduna (KAD)" },
-                  { "id": "MDI", "title": "Makurdi (MDI)" },
-                  { "id": "MIU", "title": "Maiduguri (MIU)" },
-                  { "id": "MXJ", "title": "Minna (MXJ)" },
-                  { "id": "QOW", "title": "Owerri (QOW)" },
-                  { "id": "SKO", "title": "Sokoto (SKO)" },
-                  { "id": "YOL", "title": "Yola (YOL)" },
-                  { "id": "ABB", "title": "Asaba (ABB)" },
-                  { "id": "AKR", "title": "Akure (AKR)" },
-                  { "id": "IBA", "title": "Ibadan (IBA)" },
-                  { "id": "JOS", "title": "Jos (JOS)" },
-                  { "id": "QRW", "title": "Warri (QRW)" }
+                  {
+                    "id": "LOS",
+                    "title": "Lagos (LOS)"
+                  },
+                  {
+                    "id": "ABV",
+                    "title": "Abuja (ABV)"
+                  },
+                  {
+                    "id": "PHC",
+                    "title": "Port Harcourt (PHC)"
+                  },
+                  {
+                    "id": "ENU",
+                    "title": "Enugu (ENU)"
+                  },
+                  {
+                    "id": "BNI",
+                    "title": "Benin (BNI)"
+                  },
+                  {
+                    "id": "KAN",
+                    "title": "Kano (KAN)"
+                  },
+                  {
+                    "id": "CBQ",
+                    "title": "Calabar (CBQ)"
+                  },
+                  {
+                    "id": "ILR",
+                    "title": "Ilorin (ILR)"
+                  },
+                  {
+                    "id": "QOW",
+                    "title": "Owerri (QOW)"
+                  },
+                  {
+                    "id": "ABB",
+                    "title": "Asaba (ABB)"
+                  },
+                  {
+                    "id": "QUO",
+                    "title": "Uyo (QUO)"
+                  },
+                  {
+                    "id": "SKO",
+                    "title": "Sokoto (SKO)"
+                  },
+                  {
+                    "id": "YOL",
+                    "title": "Yola (YOL)"
+                  },
+                  {
+                    "id": "MIU",
+                    "title": "Maiduguri (MIU)"
+                  },
+                  {
+                    "id": "AKR",
+                    "title": "Akure (AKR)"
+                  },
+                  {
+                    "id": "QRW",
+                    "title": "Warri (QRW)"
+                  },
+                  {
+                    "id": "JOS",
+                    "title": "Jos (JOS)"
+                  },
+                  {
+                    "id": "KAD",
+                    "title": "Kaduna (KAD)"
+                  },
+                  {
+                    "id": "IBA",
+                    "title": "Ibadan (IBA)"
+                  },
+                  {
+                    "id": "ACC",
+                    "title": "Accra (ACC)"
+                  },
+                  {
+                    "id": "ABJ",
+                    "title": "Abidjan (ABJ)"
+                  },
+                  {
+                    "id": "DSS",
+                    "title": "Dakar (DSS)"
+                  },
+                  {
+                    "id": "LFW",
+                    "title": "Lome (LFW)"
+                  },
+                  {
+                    "id": "COO",
+                    "title": "Cotonou (COO)"
+                  },
+                  {
+                    "id": "DLA",
+                    "title": "Douala (DLA)"
+                  },
+                  {
+                    "id": "NSI",
+                    "title": "Yaounde (NSI)"
+                  },
+                  {
+                    "id": "NIM",
+                    "title": "Niamey (NIM)"
+                  },
+                  {
+                    "id": "BKO",
+                    "title": "Bamako (BKO)"
+                  },
+                  {
+                    "id": "ROB",
+                    "title": "Monrovia (ROB)"
+                  },
+                  {
+                    "id": "FNA",
+                    "title": "Freetown (FNA)"
+                  },
+                  {
+                    "id": "LON",
+                    "title": "London (LON)"
+                  },
+                  {
+                    "id": "NYC",
+                    "title": "New York (NYC)"
+                  },
+                  {
+                    "id": "DXB",
+                    "title": "Dubai (DXB)"
+                  },
+                  {
+                    "id": "JED",
+                    "title": "Jeddah (JED)"
+                  },
+                  {
+                    "id": "RUH",
+                    "title": "Riyadh (RUH)"
+                  },
+                  {
+                    "id": "CAI",
+                    "title": "Cairo (CAI)"
+                  },
+                  {
+                    "id": "JNB",
+                    "title": "Johannesburg (JNB)"
+                  }
                 ]
               },
               {
                 "type": "Footer",
                 "label": "Continue",
                 "on-click-action": {
-                  "name": "navigate",
-                  "next": { "type": "screen", "name": "SET_BEEP_DATES" }
+                  "name": "data_exchange",
+                  "payload": {
+                    "origin": {
+                      "path": "origin"
+                    },
+                    "destination": {
+                      "path": "destination"
+                    }
+                  }
                 }
               }
             ]
@@ -92,6 +365,16 @@
       "id": "SET_BEEP_DATES",
       "title": "Travel date",
       "terminal": false,
+      "data": {
+        "min_date": {
+          "type": "string",
+          "__example__": "2026-09-19"
+        },
+        "max_date": {
+          "type": "string",
+          "__example__": "2027-08-15"
+        }
+      },
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
@@ -99,20 +382,38 @@
             "type": "Form",
             "name": "dates_form",
             "children": [
-              { "type": "TextHeading", "text": "When do you fly?" },
-              { "type": "TextBody", "text": "We'll watch fares for this route up to your date." },
+              {
+                "type": "TextHeading",
+                "text": "When do you fly?"
+              },
+              {
+                "type": "TextBody",
+                "text": "We'll watch fares for this route up to your date."
+              },
               {
                 "type": "DatePicker",
                 "name": "departure_date",
                 "label": "Departure date",
-                "required": true
+                "required": true,
+                "min-date": "${data.min_date}",
+                "max-date": "${data.max_date}"
               },
               {
                 "type": "Footer",
                 "label": "Continue",
                 "on-click-action": {
-                  "name": "navigate",
-                  "next": { "type": "screen", "name": "SET_BEEP_REVIEW" }
+                  "name": "data_exchange",
+                  "payload": {
+                    "origin": {
+                      "path": "origin"
+                    },
+                    "destination": {
+                      "path": "destination"
+                    },
+                    "departure_date": {
+                      "path": "departure_date"
+                    }
+                  }
                 }
               }
             ]
@@ -125,6 +426,12 @@
       "title": "Alert settings",
       "terminal": true,
       "success": true,
+      "data": {
+        "fare_label": {
+          "type": "string",
+          "__example__": "Right now: Air Peace \u20a698,000 in the Shared Ledger for this date."
+        }
+      },
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
@@ -132,12 +439,22 @@
             "type": "Form",
             "name": "review_form",
             "children": [
-              { "type": "TextHeading", "text": "Almost done" },
-              { "type": "TextBody", "text": "Optionally set the price we should watch for - or leave it empty to alert on ANY drop." },
+              {
+                "type": "TextHeading",
+                "text": "Almost done"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.fare_label}"
+              },
+              {
+                "type": "TextBody",
+                "text": "Optionally set the price we should watch for - or leave it empty to alert on ANY drop. Fares are re-checked throughout the day."
+              },
               {
                 "type": "TextInput",
                 "name": "target_price",
-                "label": "Alert me below this price (₦) - optional",
+                "label": "Alert me below this price (\u20a6) - optional",
                 "input-type": "number",
                 "required": false,
                 "helper-text": "Leave empty to alert on ANY price drop."
@@ -145,7 +462,9 @@
               {
                 "type": "Footer",
                 "label": "Set my beep",
-                "on-click-action": { "name": "complete" }
+                "on-click-action": {
+                  "name": "complete"
+                }
               }
             ]
           }

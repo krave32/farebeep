@@ -81,15 +81,69 @@ def test_init_picks_first_screen(client):
     r = _post_flow(client, {"version": "3.0", "action": "INIT", "screen": ""})
     body = r.json()
     assert body["screen"] == "SET_BEEP_TRIP"
-    assert body["data"] == {}
+    assert body["data"]["min_date"] and body["data"]["max_date"]
+
+
+def test_init_date_bounds_span_the_booking_window(client):
+    from FareBeep.dates import lagos_today
+    body = _post_flow(client, {"version": "3.0", "action": "INIT",
+                               "screen": ""}).json()
+    assert body["data"]["min_date"] == lagos_today().isoformat()
+    assert body["data"]["max_date"] > body["data"]["min_date"]
 
 
 def test_back_walks_up_the_stack(client):
     r = _post_flow(client, {"version": "3.0", "action": "BACK",
                             "screen": "SET_BEEP_REVIEW"})
-    assert r.json()["screen"] == "SET_BEEP_DATES"
+    body = r.json()
+    assert body["screen"] == "SET_BEEP_DATES"
+    assert body["data"]["min_date"]          # bounds re-served for the picker
     r = _post_flow(client, {"version": "3.0", "action": "BACK", "screen": ""})
     assert r.json()["screen"] == "SET_BEEP_TRIP"
+
+
+# -- Q1b: the dates -> review data_exchange step ---------------------------
+def test_data_exchange_serves_ledger_fare(client, session_factory):
+    from FareBeep.models import FareLedger
+    db = session_factory()
+    db.add(FareLedger(origin="LOS", destination="ABV",
+                      flight_date=FUTURE_DATE, price=98000.0,
+                      airline="Air Peace"))
+    db.commit()
+    db.close()
+    r = _post_flow(client, {"version": "3.0", "action": "data_exchange",
+                            "screen": "SET_BEEP_DATES",
+                            "origin": "LOS", "destination": "ABV",
+                            "departure_date": FUTURE_DATE})
+    body = r.json()
+    assert body["screen"] == "SET_BEEP_REVIEW"
+    assert "98,000" in body["data"]["fare_label"]
+    assert "Air Peace" in body["data"]["fare_label"]
+
+
+def test_data_exchange_without_ledger_says_any_drop(client):
+    r = _post_flow(client, {"version": "3.0", "action": "data_exchange",
+                            "screen": "SET_BEEP_DATES",
+                            "origin": "LOS", "destination": "KAN",
+                            "departure_date": FUTURE_DATE})
+    body = r.json()
+    assert body["screen"] == "SET_BEEP_REVIEW"
+    assert "ANY drop" in body["data"]["fare_label"]
+
+
+def test_route_screen_exchange_serves_date_bounds(client):
+    """The trip screen's footer is an endpoint step too (Meta forbids a
+    static navigate into a screen with a non-empty data model) - it must
+    answer the DATE screen with live bounds, not the review screen."""
+    from FareBeep.dates import lagos_today
+    r = _post_flow(client, {"version": "3.0", "action": "data_exchange",
+                            "screen": "SET_BEEP_TRIP",
+                            "origin": "LOS", "destination": "ABV"})
+    body = r.json()
+    assert body["screen"] == "SET_BEEP_DATES"
+    assert body["data"]["min_date"] == lagos_today().isoformat()
+    assert body["data"]["max_date"] > body["data"]["min_date"]
+    assert "fare_label" not in body["data"]   # review data not served yet
 
 
 # -- Q2: completion creates the watch (idempotent) --------------------------
@@ -139,11 +193,11 @@ def test_complete_without_minted_token_still_succeeds(client,
     db.close()
 
 
-# -- Q3: invalid completions bounce -----------------------------------------
+# -- Q3: invalid completions bounce to the screen owning the field --------
 def test_complete_past_date_bounces(client, session_factory):
     r = _post_flow(client, _complete_payload(departure_date="2001-01-01"))
     body = r.json()
-    assert body["screen"] == "SET_BEEP_TRIP"
+    assert body["screen"] == "SET_BEEP_DATES"   # date error -> date screen
     assert "past" in body["error"].lower()
     db = session_factory()
     assert db.query(Subscription).count() == 0
@@ -152,7 +206,107 @@ def test_complete_past_date_bounces(client, session_factory):
 
 def test_complete_same_airports_bounce(client):
     r = _post_flow(client, _complete_payload(destination="LOS"))
-    assert "differ" in r.json()["error"].lower()
+    body = r.json()
+    assert body["screen"] == "SET_BEEP_TRIP"    # route error -> route screen
+    assert "differ" in body["error"].lower()
+
+
+def test_screens_json_dropdowns_match_iata_map():
+    """The airport dropdowns are a build artifact of iata._AIRPORT_MAP
+    (build_flow_screens.py) - drift between them is a regression."""
+    import json
+    from pathlib import Path
+    from FareBeep.iata import _AIRPORT_MAP
+    screens = json.loads((Path(__file__).resolve().parents[1]
+                          / "whatsapp" / "flow_screens.json").read_text())
+    trip = screens["screens"][0]["layout"]["children"][0]["children"]
+    ids = [c["data-source"] for c in trip if c["type"] == "Dropdown"]
+    assert len(ids) == 2
+    expected = []
+    for _names, code in _AIRPORT_MAP:
+        if code not in expected:
+            expected.append(code)
+    for source in ids:
+        assert [opt["id"] for opt in source] == expected
+
+
+def _walk(node, found: list):
+    """Collect every dict in a layout subtree."""
+    if isinstance(node, dict):
+        found.append(node)
+        for v in node.values():
+            _walk(v, found)
+    elif isinstance(node, list):
+        for v in node:
+            _walk(v, found)
+
+
+def _screens_json():
+    import json
+    from pathlib import Path
+    return json.loads((Path(__file__).resolve().parents[1]
+                       / "whatsapp" / "flow_screens.json").read_text())
+
+
+def test_screens_json_satisfies_meta_validator_rules():
+    """Meta's draft-flow validator rejected four separate shapes while this
+    flow was tuned. Encoding its rules here means build_flow_screens.py can't
+    regress them (the upload only fails in Business Manager, silently, later).
+
+    Rules learned from the validator, in order it complained:
+      1. DatePicker bounds are `min-date`/`max-date`, never `min`/`max`.
+      2. Dynamic props bind as "${data.key}" STRINGS (not {"path": ...}
+         objects) outside of an on-click-action payload.
+      3. Every key a screen interpolates must be declared in that screen's
+         own `data` model, with `type` AND `__example__`.
+      4. routing_model is FORWARD-ONLY: exactly one entry screen (no inbound
+         edge). Error re-routes happen at runtime via the endpoint response.
+      5. A `navigate` action may not target a screen with a non-empty data
+         model - that hop needs an endpoint step carrying a payload.
+    """
+    import re
+    doc = _screens_json()
+    screens = {s["id"]: s for s in doc["screens"]}
+
+    for sid, s in screens.items():
+        nodes: list = []
+        _walk(s["layout"], nodes)
+        model = s.get("data", {})
+        for n in nodes:
+            # (1) DatePicker prop names
+            if n.get("type") == "DatePicker":
+                assert "min" not in n and "max" not in n, \
+                    f"{sid}: DatePicker must use min-date/max-date"
+            # (5) no static navigate into a screen with a data model
+            action = n.get("on-click-action") or {}
+            if action.get("name") == "navigate":
+                nxt = (action.get("next") or {}).get("name")
+                assert not screens[nxt].get("data"), \
+                    f"{sid}: navigate into {nxt} needs an endpoint payload"
+            # (2)+(3) every interpolated key is declared with an example
+            for key, val in n.items():
+                if key in ("on-click-action", "payload"):
+                    continue
+                if not isinstance(val, str):
+                    continue
+                for ref in re.findall(r"\$\{data\.([A-Za-z0-9_]+)\}", val):
+                    assert ref in model, \
+                        f"{sid}: '${{data.{ref}}}' missing from data model"
+                    assert model[ref].get("type"), f"{sid}.{ref}: no type"
+                    assert model[ref].get("__example__"), \
+                        f"{sid}.{ref}: no __example__"
+
+    # (4) forward-only routing with a single entry screen
+    routing = doc["routing_model"]
+    assert set(routing) <= set(screens), "routing_model names an unknown screen"
+    targets = [t for edges in routing.values() for t in edges]
+    entries = [sid for sid in screens if sid not in targets]
+    assert len(entries) == 1, f"expected one entry screen, got {entries}"
+    assert entries[0] == doc["screens"][0]["id"]
+    for src, edges in routing.items():
+        for tgt in edges:
+            assert tgt not in routing or src not in routing[tgt], \
+                f"backward edge {src} <-> {tgt} is rejected by Meta"
 
 
 # -- Q4: encryption round-trip ----------------------------------------------
