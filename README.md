@@ -1,267 +1,193 @@
-# Araha — Nigeria's Flight Fare Tracker + Crowdsourced Boarding Status
+# FareBeep — Nigeria's flight fares, locked in chat
 
-WhatsApp-first fare alerts and passenger-reported flight status for **Nigerian domestic routes**.
-The full loop is real end-to-end: **a message in triggers a reply, a status escalation
-triggers a push, a fare drop triggers a push.**
+**FareBeep is the chat storefront for Nigerian domestic flights.** Send
+*"Lagos to Abuja tomorrow"* to the bot and get a real fare, hold it for ten
+minutes behind a Paystack link, and get beeped when the price drops — no app,
+no forms, no silent price jumps.
 
-## Scope
+The whole loop is real end-to-end: **a message in triggers a reply, a fare
+drop triggers a push, a payment settles a ticket.**
 
-Araha tracks **Nigeria-domestic flights only** — all routes are between Nigerian
-airports (LOS, ABV, PHC, ENU, BNI, KAN, CBQ, ILR, QOW, AKR). All fares are in NGN.
+## The three beeps
 
-**Why not West Africa-wide?** Cross-border routes (Accra, Dakar, Abidjan, Freetown)
-were removed to focus on the market where Araha has the strongest carrier coverage
-and the highest demand. Cross-border routes also required multi-currency handling
-(GHS, XOF, SLL) that added complexity without proportional value.
-
-**Why is Dana Air removed?** Dana Air (IATA: 9J) was suspended by the Nigerian NCAA
-in April 2024 following a runway incident and has ceased operations. Its route
-obligations were transferred to NG Eagle, a newer carrier now tracked instead.
-Dana Air is kept in `WEST_AFRICAN_AIRLINES` as a historical reference only.
-
-**Why is Amadeus secondary?** Amadeus GDS does not cover any Nigerian domestic carrier
-directly (Air Peace, Arik Air, Ibom Air, etc. are not on GDS). Google Flights is the
-meaningful real-data path for this scope. Amadeus code is retained for potential
-future international route expansion.
+| Beep | What it does | Where it lives |
+|---|---|---|
+| **Fare beep** | Watches a route; pushes when the price drops >10% or hits your target | `alerts.py`, `worker.py` |
+| **Status beep** | Watches a flight ahead of departure; pushes on gate/delay/board changes | `flight_status.py`, `worker.py` |
+| **Booking** | 10-minute price lock → Paystack → PNR + branded ticket PDF | `payments.py`, `travels247.py`, `main.py` |
 
 ## Architecture
 
 ```
-docker-compose / Railway
-├── db       Postgres 15 (fares, subscriptions, reports, scores, alert history)
-├── app      FastAPI: /webhook/whatsapp (Twilio inbound), /admin, /health
-└── worker   APScheduler: FX refresh + fare ingestion + price-drop pushes
+User chat (Telegram live · WhatsApp via Meta Cloud API)
+        │  webhooks (or long-polling — no tunnel needed)
+        ▼
+FastAPI  FareBeep/main.py          ← one process, every endpoint
+  │  conversation: Groq agent (tool loop) → guided fallback (brain.py)
+  │  inventory:    Shared Ledger → 247travels live on miss (search.py)
+  │  settlement:   Paystack HMAC-verified webhook (payments.py)
+  │  flows:        encrypted /flow endpoint for "Set a beep" screens
+  │                (whatsapp/flows.py + flow_screens.json)
+  ▼
+Supabase Postgres — the Shared Ledger (schema.sql / models.py)
+        ▲
+        │ loops (leader-elected by a Postgres advisory lock)
+FareBeep/worker.py  ·  serve_all.py runs them in-process
+  booking sweep · fare beeps · status beeps · ledger warmer · FX snapshots
 ```
 
-Fare ingestion and boarding status stay **decoupled**: different services
-(`fare_service` vs `status_service`), different trust models, no shared logic.
+**The Shared Ledger** is the product's core trick: every search result is
+UPSERTed into `fare_ledger`, so the first user's search pays for the live
+call and everyone else on that route for the next 8–15 minutes gets a
+free <500 ms hit (`search.py` documents the exact contract).
+
+**Price guardrail:** anomalous live fares (thin-route glitches measured in
+the wild) are flagged, never quoted as real (`FARE_PRICE_GUARDRAIL_NGN`).
+
+**Two brains, one honest fallback:** when `GROQ_API_KEY` is set, a Groq
+tool-loop agent drives the conversation (`agent.py`) with per-phone memory
+in `chat_state`. If Groq fails, the turn degrades to the deterministic
+intent parser (`brain.py`) — the user never sees an error page.
+
+## Repository layout
+
+```
+FareBeep/
+  main.py            FastAPI app: webhooks (meta/twilio/telegram), /flow,
+                     /tools/* (ElevenLabs agent hands), booking + tickets
+                     pages, /webhook/paystack, /admin/ops + /admin cockpit,
+                     /health, landing page
+  agent.py           Groq + LangChain conversational agent (tool loop)
+  brain.py           deterministic intent parser (fallback + date parsing)
+  search.py          Shared Ledger search: ledger-first, SerpApi on miss
+  travels247.py      247travels.com inventory client (async, JWT)
+  providers.py       retry/parse/contract layer over external APIs
+  alerts.py          fare-beep trigger rules (target price / >10% drop)
+  flight_status.py   delay-feed client (DELAY_API_URL; Aviationstack fallback)
+  payments.py        Paystack money math + webhook verification
+  worker.py          background loops (bookings, fare beeps, status beeps)
+  warmer.py          route warmer: keeps top-route ledger rows fresh
+  poller.py          Telegram long-polling transport (tunnel-free dev)
+  serve_all.py       web + worker + poller in ONE process (Railway mode)
+  database.py        SQLAlchemy engine + idempotent additive migrations
+  models.py / schema.sql   10 tables incl. fare_ledger, booking_sessions,
+                     chat_state, delivery_receipts
+  chatstate.py       per-phone conversation state (DB-backed)
+  cards.py           interactive fare cards + button tap routing
+  iata.py            city-name → IATA dictionary (the LLM never decides codes)
+  dates.py           shared date parsing (Africa/Lagos)
+  emailer.py         Resend delivery for voucher/boarding-pass PDFs
+  config.py          every env var, defaulted and commented
+  whatsapp/          flows.py (encrypted /flow endpoint), flow_screens.json,
+                     sender.py, router.py, verify.py, templates
+  web/               landing page (index.html/styles.css/scene.js),
+                     admin cockpit (admin.html), logo + og.png social card
+  tests/             38 files — see Tests below
+meta_flow_setup.py   create/refresh the Set-a-Beep WhatsApp Flow (draft only)
+set_flow_key.py      generate + upload the Flows RSA keypair
+submit_templates.py  submit the two outbound templates to Meta
+repoint_webhook.py   repoint the Meta webhook to a new deployment URL
+simulate_*.py        local rehearsals: full chat journey / Paystack webhook
+ops/                 read-only DB peeks (peek_beeps, probe_live_flow)
+start-dev.bat        Windows dev launcher: server + cloudflared tunnel
+```
 
 ## Running it
 
 ```bash
-# Docker
-docker-compose up --build
+# 1. Environment
+cp FareBeep/.env.example FareBeep/.env    # then fill in what you have
 
-# Local development
-python -m uvicorn app.main:app --reload
-python -m app.workers.fare_worker
+# 2. Dependencies (Python 3.11+)
+python -m venv venv
+venv/Scripts/pip install -r FareBeep/requirements.txt   # Windows
+# pip install -r FareBeep/requirements.txt              # macOS/Linux
 
-# Production (Railway via start.sh)
-sh start.sh  # runs both web + worker in one process
+# 3. Database — Supabase Postgres
+#    Run schema.sql once in the Supabase SQL Editor, set SUPABASE_DB_URL.
+#    The app applies its own additive migrations on startup.
+
+# 4. Run — pick ONE:
+python -m uvicorn FareBeep.main:app --port 8000    # web only
+python -m FareBeep.worker                          # + background loops
+python -m FareBeep.serve_all                       # everything in one process
+python -m FareBeep.poller                          # Telegram without a tunnel
 ```
 
-Copy `.env.example` to `.env` and fill in real values to go live. Without Twilio
-credentials, pushes go to the container log in CONSOLE mode instead of WhatsApp —
-nothing else changes.
+Windows shortcut: `start-dev.bat` opens the server plus a cloudflared
+tunnel for the Meta webhook.
 
-## Bot commands
+**Transport switching** — `MESSAGING_PROVIDER` picks the channel:
+`telegram` (fastest test path: Bot API, no approval), `meta` (WhatsApp
+Cloud API — production), `twilio` (legacy). Pushes without credentials go
+to the log instead — nothing else changes.
 
-| Message | Effect |
-|---|---|
-| `SUBSCRIBE LOS ABV` | Fare-drop alerts, rolling 30-day window |
-| `SUBSCRIBE LOS ABV 80000` | Same, with target price |
-| `SUBSCRIBE LOS ABV 2026-08-15` | Fare-drop alerts for that specific date only |
-| `SUBSCRIBE LOS ABV 2026-08-15 80000` | Specific date + target price |
-| `FARE LOS ABV` | Cheapest fare in next 30 days |
-| `FARE LOS ABV 2026-08-15` | Cheapest fare for that specific date |
-| `TRACK P47123 2026-07-20` | Live boarding/gate/delay pushes for that flight |
-| `boarding now gate 12` (while tracking) | Files a status report |
-| `HELP` | Command list |
-| `UNSUBSCRIBE` | Remove all alerts and delete your data |
+**Key env vars** (all in `.env.example` with comments): `SUPABASE_DB_URL`,
+`MESSAGING_PROVIDER`, `TELEGRAM_BOT_TOKEN`, `META_*`, `GROQ_API_KEY`,
+`SERPAPI_API_KEY`, `TRAVELS247_*`, `PAYSTACK_*`, `ADMIN_TOKEN`
+(unlocks `/admin` + `/admin/ops`; unset = those surfaces 404, closed by
+design), `ADMIN_ALERT_PHONE` (the support-relay console), `BEEP_FLOW_MODE`
+(`draft` while building the flow, `published` at go-live).
 
-### Date-aware fares
+## The booking settlement contract
 
-- **Rolling window** (default): searches fares across the next 30 days. The worker
-  samples dates every `FARE_WINDOW_SAMPLE_DAYS` (default 5) within the window to
-  avoid multiplying API calls.
-- **Specific date**: pass a YYYY-MM-DD date to search only that date.
-- `get_cheapest_fare()` is always scoped — it never compares a cheap Tuesday fare
-  against an expensive Christmas fare on the same route.
+`final_price = (net_fare + ARHA_MARKUP_NGN + PAYSTACK_FLAT_FEE_NAIRA)
+/ (1 − PROCESSING_FEE_RATE)` — the customer funds the gateway fee so the
+utility nets the full markup on every ticket. Payments arriving after the
+10-minute lock are rejected and refund-flagged; the airline API is never
+called on an expired session.
 
-## Fare data sources
+## Ops
 
-Toggle with the `FARE_SOURCE` env var — `mock` (default), `google`, `amadeus`, or
-`hybrid`. No redeploy needed.
-
-| Source | What it provides | API key needed? | Nigeria-domestic relevance |
-|---|---|---|---|
-| `MockFareIngestor` | Deterministic test data, realistic price jitter | No | Dev/test only |
-| `GoogleFlightsIngestor` | **Google Flights fares — covers Air Peace, Arik, Ibom, etc.** | No | **PRIMARY** |
-| `AmadeusFareIngestor` | GDS fares (international carriers) | Yes (free tier) | Secondary (no NG domestic coverage) |
-| `HybridIngestor` | Google Flights + Amadeus combined | Amadeus key only | Secondary |
-
-### Tracked routes (Nigeria domestic only)
-
-| Route | Description | Expected carriers |
-|---|---|---|
-| LOS-ABV / ABV-LOS | Lagos - Abuja | Air Peace, Arik, Ibom, United Nigeria |
-| LOS-PHC / PHC-LOS | Lagos - Port Harcourt | Air Peace, Arik |
-| LOS-ENU / ENU-LOS | Lagos - Enugu | Air Peace, Enugu Air, Ibom |
-| LOS-BNI / BNI-LOS | Lagos - Benin City | Air Peace, Arik |
-| LOS-KAN / KAN-LOS | Lagos - Kano | Air Peace, Max Air |
-| LOS-CBQ / CBQ-LOS | Lagos - Calabar | Ibom Air, Air Peace |
-| LOS-ILR / ILR-LOS | Lagos - Ilorin | Air Peace, Overland |
-| LOS-QOW / QOW-LOS | Lagos - Owerri | Air Peace, United Nigeria |
-| ABV-PHC / PHC-ABV | Abuja - Port Harcourt | Air Peace, Arik |
-| ABV-ENU / ENU-ABV | Abuja - Enugu | Air Peace, Enugu Air |
-| ABV-BNI / BNI-ABV | Abuja - Benin City | Air Peace |
-| ABV-KAN / KAN-ABV | Abuja - Kano | Air Peace, Max Air |
-| ABV-CBQ / CBQ-ABV | Abuja - Calabar | Ibom Air |
-| PHC-ENU / ENU-PHC | Port Harcourt - Enugu | Air Peace |
-
-### Nigerian domestic carriers
-
-| Airline | IATA | Google Flights? | Amadeus GDS? |
-|---|---|---|---|
-| Air Peace | P4 | **Yes** | No |
-| Arik Air | W3 | **Yes** | No |
-| Ibom Air | QI | Likely | No |
-| United Nigeria Airlines | UN | Possible | No |
-| Green Africa Airways | NK | Possible | No |
-| ValueJet | VK | Possible | No |
-| Overland Airways | OF | Limited | No |
-| NG Eagle | NE | Possible (new carrier) | No |
-| Max Air | MX | Primarily Kano hub | No |
-| Umza Air | UM | Limited | No |
-| Enugu Air | Q9 | Limited | No |
-| ~~Dana Air~~ | ~~9J~~ | ~~Defunct (NCAA suspended April 2024)~~ | No |
-
-### Google Flights safety filter
-
-The `fli` library's internal `Airline` enum has **incorrect string values** for
-some carriers (e.g. `Airline.P4.value` returns `'Aerolineas Sosa'` — a Honduran
-airline — instead of `'Air Peace'`). The ingestor was fixed to use
-`flight.primary_airline.name` (correct IATA code) and
-`flight.primary_airline_name` (correct human name) instead of `leg.airline.value`.
-
-As a permanent safety net, `GoogleFlightsIngestor` maintains a
-`NIGERIAN_DOMESTIC_AIRLINES` allow-list. Any result attributed to an airline
-NOT in that set for a Nigeria-domestic route is **dropped and logged as
-suspicious** rather than returned as a real fare. A dropped result is fine;
-a wrong result shown to a user as real is not.
-
-### Tuning knobs
-
-| Env var | Default | Description |
-|---|---|---|
-| `FARE_POLL_MINUTES` | 5 | Worker poll interval |
-| `FARE_WINDOW_DAYS` | 30 | Rolling window length |
-| `FARE_WINDOW_SAMPLE_DAYS` | 5 | Sample every N days within window |
-| `FARE_SOURCE` | mock | Active ingestor: mock/google/amadeus/hybrid |
-| `GOOGLE_FLIGHTS_CURRENCY` | NGN | Currency for Google Flights queries |
-| `ADMIN_USER` | *(unset)* | HTTP Basic Auth username for /admin |
-| `ADMIN_PASSWORD` | *(unset)* | HTTP Basic Auth password for /admin |
-
-## Admin authentication
-
-The `/admin` dashboard is protected with HTTP Basic Auth. Set both `ADMIN_USER`
-and `ADMIN_PASSWORD` environment variables before deployment:
-
-```bash
-# Local (.env file)
-ADMIN_USER=admin
-ADMIN_PASSWORD=your-strong-password
-
-# Railway
-railway variables set ADMIN_USER=admin ADMIN_PASSWORD=your-strong-password
-```
-
-If either variable is unset, the admin panel runs **unprotected** with a clear
-startup warning in the logs. Never deploy to production without these set.
-
-## Privacy & data protection (NDPA)
-
-Araha complies with the Nigeria Data Protection Act (NDPA) 2023.
-See [PRIVACY.md](PRIVACY.md) for the full privacy policy.
-
-**Summary:**
-- **Collected:** phone number, subscribed routes, reported flight statuses
-- **Not collected:** name, email, payment info, location
-- **Removal:** Send `UNSUBSCRIBE` (or `CANCEL`, `QUIT`, `REMOVE`) to remove
-  all alerts and have your personal data deleted/anonymized. The literal
-  word `STOP` is intercepted by Twilio at the platform level — our
-  `/webhook/optout` endpoint receives a callback to handle data deletion.
-- Historical records are anonymized (phone number replaced with `[deleted]`)
-  rather than kept tied to your identity.
-- The onboarding message includes a data-use notice per NDPA requirements.
-
-### Twilio opt-out webhook setup
-
-Twilio intercepts `STOP`, `START`, `HELP`, and `UNSUBSCRIBE` at the platform
-level. To ensure our database cleanup runs when a user opts out:
-
-1. In Twilio Console → Messaging → Settings → WhatsApp Sandbox Settings
-2. Set **Opt-out management** URL to:
-   `https://endearing-celebration-production-f9f3.up.railway.app/webhook/optout`
-3. Set **Opt-in management** URL to:
-   `https://endearing-celebration-production-f9f3.up.railway.app/webhook/optin`
-
-This guarantees NDPA-compliant data deletion even though `STOP` never
-reaches our `/webhook/whatsapp` endpoint.
-
-## Notification emoji scheme (centralized in notify_templates.py)
-
-| Message type | Emoji |
-|---|---|
-| Subscribe / Track confirmation | ✅ |
-| Fare found (FARE query) | 💰 |
-| No fare/route data yet | 🔎 |
-| Status report logged (pending) | 📝 |
-| Rate-limited ("too fast") | ⏳ |
-| Unparsed/unclear report | ❓ |
-| Fare-drop alert (push) | 📉 |
-| Boarding confirmed (push) | 🛫 |
-| Gate change confirmed (push) | 🚪 |
-| Delay confirmed (push) | ⏰ |
-| Not-boarding confirmed (push) | 🕓 |
-| Other/generic status (push) | 🔔 |
-| HELP text | *(none)* |
-
-## Boarding-status trust model (`app/services/status_service.py`)
-
-- 1 report → **pending** (never pushed)
-- 2+ **distinct** reporters, same state, within 30 min → **confirmed** → pushed
-  once (deduped via `push_log`) to everyone subscribed to that flight
-- Conflicting states → **disputed**, surfaced in admin, never silently overwritten
-- Exception: a bucket with ≥2 reporters AND ≥2× the rival bucket wins
-  (majority-wins); minority reports are marked disputed
-
-### Anti-abuse
-- Rate limit: 1 report / reporter / flight / 5 min
-- Reporter scoring: contradiction rate > 50% over ≥3 reports → **flagged**
-- Reward hook: `reporter_scores.credits` + `trust_level` columns for future use
+- `GET /health` — liveness
+- `GET /admin` — the ops cockpit (browser UI): health strip, open support
+  threads with transcripts + one-tap relay commands, dead-letter replay.
+  Shell is served only when `ADMIN_TOKEN` is set; data always demands the
+  `X-Admin-Token` header — the token never rides a URL.
+- `GET /admin/ops` — the same snapshot as JSON, for scripts.
+- Support relay: users who say `SUPPORT` (or hit money trouble) get a
+  human thread; the admin replies from their own chat with
+  `R <phone> <text>`, lists with `/open`, closes with `/done <phone>`.
 
 ## Tests
 
 ```bash
-cd araha && python -m pytest tests -v
+venv/Scripts/python.exe -m pytest FareBeep/tests -q    # Windows
+python -m pytest FareBeep/tests -q                     # macOS/Linux
 ```
 
-**226 passing** — covers: fare ingestion (mock + Amadeus + Google Flights safety
-filter), FX conversion, price-alert triggering (date-aware), status parsing,
-confirmation/dispute/majority-wins, emoji templates, FARE_SOURCE toggle, Dana Air
-removal, rolling-window sampling, specific-date subscriptions, date-scoped queries,
-command parsing with dates, implausible-airline filtering, conversation state,
-admin authentication, unsubscribe/NDPA data anonymization, onboarding flow,
-cross-date alert deduplication, and Twilio platform-level STOP interception.
+**496 passing** across 38 files — the conversation pipeline (concierge,
+pick gates, rate limiting), the Shared Ledger (ledger-first search, FX
+floor, price guardrail), the flow endpoint (validator rules, encryption,
+idempotent subscribe), the settlement engine (HMAC, expiry, refund
+flagging), ticket/boarding-pass PDFs, delivery retries + dead letters,
+crash recovery, the support relay, the ops cockpit, and a full
+**E2E beep-pipeline smoke test** (flow → subscription → alert against
+mocked Meta APIs).
 
-## What's REAL vs MOCKED
+## What's REAL vs mocked
 
 | Component | Status |
 |---|---|
-| WhatsApp inbound webhook (Twilio → TwiML reply) | **REAL** |
-| WhatsApp outbound pushes (Twilio SDK) | **REAL**; console fallback |
-| Price-drop alert worker (APScheduler, date-aware) | **REAL** |
-| Boarding-status confirm → push loop | **REAL** |
-| FX rates (open.er-api.com, keyless, NGN only) | **REAL** with cached fallback |
-| Admin view (`/admin`) | **REAL** (HTTP Basic Auth protected) |
-| Fare data (mock) | **REAL** code, fake prices — default for dev |
-| Fare data (Google Flights) | **REAL** via fli library — **primary for production** |
-| Fare data (Amadeus) | **REAL** code, secondary — no NG domestic carrier coverage |
+| Telegram transport (webhook + long-polling) | **REAL** — live |
+| WhatsApp Cloud API (Meta) inbound/outbound | **REAL** — code complete, awaiting Meta business approval |
+| Shared Ledger search → 247travels live fares | **REAL** |
+| Paystack settlement + webhook verification | **REAL** |
+| Groq conversational agent + guided fallback | **REAL** |
+| WhatsApp Flow ("Set a beep", encrypted endpoint) | **REAL** — draft mode until Meta publishes the flow |
+| Ticket + boarding-pass PDFs (reportlab) + Resend email | **REAL** |
+| Fare data in dev without `TRAVELS247_*` | mocked by the ledger/tests — never shipped to users |
 
-## STILL not done
+## Go-live checklist (WhatsApp)
 
-1. **Production WhatsApp Business API approval** — sandbox only.
-2. **Google Flights rate-limit hardening** — at very high poll frequencies.
-3. **fli legal review** — reverse-engineered API; review Google ToS before
-   commercial deployment at scale.
+1. Meta business verification → WABA production approval
+2. `python meta_flow_setup.py` (create flow) → publish it in Business Manager
+3. `python set_flow_key.py` (flows encryption keypair)
+4. `python repoint_webhook.py <url>` → set `BEEP_FLOW_MODE=published`
+5. `python submit_templates.py` → approve the two utility templates
+
+## Privacy
+
+Chat data (phone, routes, bookings) lives in your Supabase; `STOP` (or
+`delete my data`) wipes the user's rows. No `ADMIN_TOKEN` in any committed
+file; secrets live only in `.env` (git-ignored).
