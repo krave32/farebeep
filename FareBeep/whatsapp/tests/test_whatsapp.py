@@ -29,13 +29,17 @@ def test_commands():
     assert detect_command("Lagos to Abuja") is None
 
 def test_validate_beep_valid():
-    assert _validate_beep({"origin": "LOS", "destination": "ABV", "departure_date": "2026-09-18", "passengers": 1}) is None
+    assert _validate_beep({"origin": "LOS", "destination": "ABV",
+                           "departure_date": "2099-01-18",
+                           "passengers": 1}) is None
 
 def test_validate_beep_same_city():
-    assert "differ" in _validate_beep({"origin": "LOS", "destination": "LOS", "departure_date": "2026-09-18"}).lower()
+    err = _validate_beep({"origin": "LOS", "destination": "LOS", "departure_date": "2026-09-18"})
+    assert err is not None and "differ" in err[1].lower()
 
 def test_validate_beep_past():
-    assert "past" in _validate_beep({"origin": "LOS", "destination": "ABV", "departure_date": "2020-01-01"}).lower()
+    err = _validate_beep({"origin": "LOS", "destination": "ABV", "departure_date": "2020-01-01"})
+    assert err is not None and "past" in err[1].lower()
 
 def test_validate_beep_missing():
     assert _validate_beep({"destination": "ABV"}) is not None

@@ -24,7 +24,8 @@ User chat (Telegram live · WhatsApp via Meta Cloud API)
         ▼
 FastAPI  FareBeep/main.py          ← one process, every endpoint
   │  conversation: Groq agent (tool loop) → guided fallback (brain.py)
-  │  inventory:    Shared Ledger → 247travels live on miss (search.py)
+  │  inventory:    Shared Ledger first; live miss → 247travels (agent
+  │               + /tools) or SerpApi/Google-Flights (deterministic paths)
   │  settlement:   Paystack HMAC-verified webhook (payments.py)
   │  flows:        encrypted /flow endpoint for "Set a beep" screens
   │                (whatsapp/flows.py + flow_screens.json)
@@ -59,7 +60,9 @@ FareBeep/
                      /health, landing page
   agent.py           Groq + LangChain conversational agent (tool loop)
   brain.py           deterministic intent parser (fallback + date parsing)
-  search.py          Shared Ledger search: ledger-first, SerpApi on miss
+  search.py          Shared Ledger search: ledger-first; miss → live engine
+                     (SerpApi/Google-Flights default, LedgerOnly probe for
+                     agent + /tools paths)
   travels247.py      247travels.com inventory client (async, JWT)
   providers.py       retry/parse/contract layer over external APIs
   alerts.py          fare-beep trigger rules (target price / >10% drop)
@@ -82,7 +85,8 @@ FareBeep/
                      sender.py, router.py, verify.py, templates
   web/               landing page (index.html/styles.css/scene.js),
                      admin cockpit (admin.html), logo + og.png social card
-  tests/             38 files — see Tests below
+  tests/             37 files — see Tests below
+  whatsapp/tests/    flow endpoint + router classification (9 tests)
 meta_flow_setup.py   create/refresh the Set-a-Beep WhatsApp Flow (draft only)
 set_flow_key.py      generate + upload the Flows RSA keypair
 submit_templates.py  submit the two outbound templates to Meta
@@ -149,14 +153,35 @@ called on an expired session.
   human thread; the admin replies from their own chat with
   `R <phone> <text>`, lists with `/open`, closes with `/done <phone>`.
 
+## Talking to the bot
+
+Natural language is the interface — the Groq agent (or the fallback parser)
+handles "Lagos to Abuja tomorrow", "going to Enugu on the 30th", "cheapest
+flight to PHC next friday". The deterministic anchors, as the help text
+teaches them:
+
+| Message | Effect |
+|---|---|
+| `Lagos to Abuja tomorrow` | Ranked fare list — reply **1/2/3** to lock one |
+| `BOOK Lagos to Abuja` | 10-minute lock + Paystack link |
+| `TRACK Lagos to Abuja below 80k` | Fare beep (price-drop/target alert) |
+| `Track P47123` | Status beep (gate/delay/board pushes) |
+| `SUPPORT` | Human thread — relays to the founder |
+| `MY BOOKINGS` | Secure 15-minute browser link to your tickets |
+| `STOP` | Removes all alerts + deletes chat data |
+
+"Set a beep" also runs as a structured WhatsApp Flow (three screens: trip,
+date, review) with the same idempotent watch creation underneath.
+
 ## Tests
 
 ```bash
-venv/Scripts/python.exe -m pytest FareBeep/tests -q    # Windows
-python -m pytest FareBeep/tests -q                     # macOS/Linux
+python -m pytest -q                    # everything (see pytest.ini)
+python -m pytest FareBeep/tests -q     # the core suite
+python -m pytest FareBeep/whatsapp/tests -q   # flow endpoint + router
 ```
 
-**496 passing** across 38 files — the conversation pipeline (concierge,
+**505 passing** across 38 files — the conversation pipeline (concierge,
 pick gates, rate limiting), the Shared Ledger (ledger-first search, FX
 floor, price guardrail), the flow endpoint (validator rules, encryption,
 idempotent subscribe), the settlement engine (HMAC, expiry, refund
@@ -188,6 +213,8 @@ mocked Meta APIs).
 
 ## Privacy
 
-Chat data (phone, routes, bookings) lives in your Supabase; `STOP` (or
-`delete my data`) wipes the user's rows. No `ADMIN_TOKEN` in any committed
-file; secrets live only in `.env` (git-ignored).
+Chat data (phone, routes, bookings) lives in your Supabase; `STOP`
+(or `delete my data`) removes every subscription and all chat-scoped
+state — money records (booking_sessions) are kept so refunds stay
+provable. No `ADMIN_TOKEN` in any committed file; secrets live only in
+`.env` (git-ignored).
