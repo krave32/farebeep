@@ -168,6 +168,11 @@ ADMIN_TOKEN = _get("ADMIN_TOKEN")
 # throttled - opting out must always work, even mid-flood.
 RATE_LIMIT_PER_MIN = _get_int("RATE_LIMIT_PER_MIN", 20)
 
+# --- Human support relay ----------------------------------------------------
+# Open support threads auto-close after this many hours (marked "stale" in
+# ops, not deleted - the transcript survives in the ChatState row).
+SUPPORT_TICKET_TTL_HOURS = _get_int("SUPPORT_TICKET_TTL_HOURS", 48)
+
 # --- WhatsApp Flows (structured screens UI) --------------------------------
 # The "Set a beep" Flow asset ID from WhatsApp Manager (Flows). Unset =
 # the "Set a beep" card button degrades to the plain-text TRACK path.

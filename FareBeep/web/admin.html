@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>FareBeep · Ops</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --pine:#0e3b2c; --pine-deep:#0a2d21; --pine-panel:#12402f;
+    --ink:#eef3e2; --muted:#9db8a4; --lime:#d8e95b; --lime-soft:#cfe05c;
+    --danger:#ff9a8a; --ok:#7fd6a4; --line:#1d5040;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--pine);color:var(--ink);
+       font:15px/1.5 "Plus Jakarta Sans",system-ui,sans-serif}
+  a{color:var(--lime)}
+  .wrap{max-width:980px;margin:0 auto;padding:20px 16px 60px}
+
+  header{position:sticky;top:0;z-index:5;background:rgba(14,59,44,.92);
+         backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  .bar{max-width:980px;margin:0 auto;padding:12px 16px;display:flex;
+       align-items:center;gap:12px}
+  .wordmark{font-weight:800;font-size:18px;letter-spacing:-.02em}
+  .wordmark b{color:var(--lime)}
+  .spacer{flex:1}
+  .stamp{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  button{font:inherit;cursor:pointer;border:0;border-radius:10px}
+  .btn{background:var(--lime);color:var(--pine-deep);font-weight:800;
+       padding:8px 14px}
+  .btn:active{transform:translateY(1px)}
+  .btn-ghost{background:transparent;color:var(--lime-soft);
+             border:1px solid var(--line);padding:7px 12px;font-weight:600}
+  .btn-mini{background:var(--pine-panel);color:var(--lime-soft);
+            border:1px solid var(--line);padding:4px 10px;font-size:12px;
+            font-weight:600}
+  .btn-mini:hover{border-color:var(--lime-soft)}
+
+  /* unlock gate */
+  .gate{max-width:420px;margin:12vh auto 0;background:var(--pine-panel);
+        border:1px solid var(--line);border-radius:16px;padding:28px}
+  .gate h1{margin:0 0 6px;font-size:22px;letter-spacing:-.02em}
+  .gate p{margin:0 0 16px;color:var(--muted);font-size:13px}
+  .gate input{width:100%;background:var(--pine-deep);color:var(--ink);
+              border:1px solid var(--line);border-radius:10px;
+              padding:11px 12px;font-family:var(--mono);font-size:14px}
+  .gate input:focus{outline:2px solid var(--lime);border-color:transparent}
+  .gate .row{display:flex;gap:8px;margin-top:12px}
+  .err{color:var(--danger);font-size:13px;margin-top:10px;min-height:18px}
+
+  /* health strip */
+  .strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+         gap:10px;margin:18px 0 22px}
+  .stat{background:var(--pine-panel);border:1px solid var(--line);
+        border-radius:14px;padding:12px 14px}
+  .stat .k{font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+           color:var(--muted)}
+  .stat .v{font-family:var(--mono);font-size:26px;font-weight:800;
+           margin-top:2px}
+  .stat.bad{border-color:var(--danger)}
+  .stat.bad .v{color:var(--danger)}
+  .stat.good .v{color:var(--ok)}
+
+  h2{font-size:13px;letter-spacing:.12em;text-transform:uppercase;
+     color:var(--lime-soft);margin:26px 0 10px;display:flex;
+     align-items:center;gap:10px}
+  h2::after{content:"";flex:1;height:1px;background:var(--line)}
+  .quiet{color:var(--muted);font-size:13px}
+
+  /* support threads */
+  .thread{background:var(--pine-panel);border:1px solid var(--line);
+          border-radius:16px;padding:14px 16px;margin-bottom:12px}
+  .thread .head{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+  .thread .id{font-family:var(--mono);font-weight:800;color:var(--lime)}
+  .chip{font-family:var(--mono);font-size:11px;padding:2px 8px;
+        border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .chip.stale{color:var(--danger);border-color:var(--danger)}
+  .thread .phone{font-family:var(--mono);font-size:13px;color:var(--ink)}
+  .bubble{margin-top:10px;padding:8px 12px;border-radius:12px;
+          max-width:85%;font-size:14px;white-space:pre-wrap;
+          overflow-wrap:anywhere}
+  .bubble.user{background:var(--pine-deep);border:1px solid var(--line);
+               margin-right:auto}
+  .bubble.admin{background:#1c4a2e;border:1px solid #2a6247;
+                margin-left:auto}
+  .bubble .who{display:block;font-family:var(--mono);font-size:10px;
+               color:var(--muted);margin-bottom:2px;text-transform:uppercase;
+               letter-spacing:.08em}
+  .relay{display:flex;gap:8px;margin-top:12px;align-items:center}
+  .relay code{flex:1;background:var(--pine-deep);border:1px dashed var(--line);
+              border-radius:10px;padding:8px 10px;font-family:var(--mono);
+              font-size:12.5px;color:var(--lime-soft);overflow-wrap:anywhere}
+
+  /* dead letters */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{color:var(--muted);text-align:left;font-weight:600;font-size:11px;
+     letter-spacing:.08em;text-transform:uppercase;padding:6px 8px;
+     border-bottom:1px solid var(--line)}
+  td{padding:8px;border-bottom:1px solid var(--pine-deep);vertical-align:top}
+  td.mono{font-family:var(--mono);font-size:12px}
+  .err-txt{color:var(--danger);font-family:var(--mono);font-size:11.5px;
+           max-width:280px;overflow-wrap:anywhere}
+
+  /* counters */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+        gap:10px}
+  .panel{background:var(--pine-panel);border:1px solid var(--line);
+         border-radius:14px;padding:12px 14px}
+  .panel h3{margin:0 0 8px;font-size:11px;letter-spacing:.1em;
+            text-transform:uppercase;color:var(--muted)}
+  .kv{display:flex;justify-content:space-between;font-size:13px;
+      padding:2px 0}
+  .kv b{font-family:var(--mono);font-weight:600}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <span class="wordmark">Fare<b>Beep</b> · Ops</span>
+    <span class="spacer"></span>
+    <span class="stamp" id="stamp"></span>
+    <button class="btn-ghost" id="refresh">Refresh</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <!-- unlock gate -->
+  <div class="gate" id="gate">
+    <h1>Ops cockpit</h1>
+    <p>Paste the admin token (the <code>X-Admin-Token</code> value from
+       <code>FareBeep/.env</code>). It stays in this tab's session only —
+       it never touches a URL or a log.</p>
+    <input id="token" type="password" placeholder="admin token"
+           autocomplete="off">
+    <div class="row">
+      <button class="btn" id="unlock">Open cockpit</button>
+      <button class="btn-ghost" id="forget">Forget token</button>
+    </div>
+    <div class="err" id="gateErr"></div>
+  </div>
+
+  <!-- cockpit -->
+  <div id="cockpit" style="display:none">
+    <div class="strip" id="strip"></div>
+    <h2>Support threads</h2>
+    <div id="threads"></div>
+    <h2>Dead letters</h2>
+    <div id="dead"></div>
+    <h2>Counters</h2>
+    <div class="grid" id="counters"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+    c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const TOKEN_KEY = "farebeep-admin-token";
+let timer = null;
+
+function token(){ return sessionStorage.getItem(TOKEN_KEY) || ""; }
+function stamp(msg){ $("stamp").textContent = msg; }
+
+function headers(){
+  return {"X-Admin-Token": token(), "Cache-Control": "no-store"};
+}
+
+function unlock(){
+  const t = $("token").value.trim();
+  if (!t){ $("gateErr").textContent = "Paste the token first."; return; }
+  sessionStorage.setItem(TOKEN_KEY, t);
+  $("gateErr").textContent = "";
+  enterCockpit();
+}
+
+function forget(){
+  sessionStorage.removeItem(TOKEN_KEY);
+  clearInterval(timer);
+  $("cockpit").style.display = "none";
+  $("gate").style.display = "block";
+  $("token").value = "";
+  $("gateErr").textContent = "";
+  stamp("");
+}
+
+function enterCockpit(){
+  $("gate").style.display = "none";
+  $("cockpit").style.display = "block";
+  load();
+  clearInterval(timer);
+  timer = setInterval(load, 15000);
+}
+
+function statCard(k, v, cls){
+  return `<div class="stat ${cls||""}"><div class="k">${esc(k)}</div>` +
+         `<div class="v">${esc(v)}</div></div>`;
+}
+
+function renderStrip(d){
+  const dead = (d.dead_letters_recent || []).length;
+  const staleQ = (d.inbound && d.inbound.stale_queued_5m) || 0;
+  const beeps = d.beeps || {};
+  const ag = d.agent_this_process || {};
+  const threads = (d.support && d.support.open_threads) || [];
+  $("strip").innerHTML =
+      statCard("Dead letters", dead, dead ? "bad" : "good") +
+      statCard("Stale queued", staleQ, staleQ ? "bad" : "good") +
+      statCard("Open threads", threads.length,
+               threads.length ? "" : "good") +
+      statCard("Active beeps", beeps.active ?? 0) +
+      statCard("Groq ok / fail",
+               `${ag.groq_ok ?? 0} / ${ag.groq_fail ?? 0}`);
+}
+
+function renderThreads(d){
+  const threads = (d.support && d.support.open_threads) || [];
+  if (!threads.length){
+    $("threads").innerHTML = `<div class="quiet">No open threads. 🎉</div>`;
+    return;
+  }
+  $("threads").innerHTML = threads.map(t => {
+    const msgs = (t.messages || []).map(m => `
+      <div class="bubble ${m.side === "admin" ? "admin" : "user"}">
+        <span class="who">${m.side === "admin" ? "you" : esc(t.phone)}
+        · ${esc((m.at || "").slice(11, 16))}</span>${esc(m.text)}</div>`).join("");
+    return `
+    <div class="thread">
+      <div class="head">
+        <span class="id">${esc(t.id)}</span>
+        <span class="chip ${t.status === "stale" ? "stale" : ""}">${esc(t.status)}</span>
+        <span class="chip">${esc(t.trigger || "")}</span>
+        <span class="chip">${esc(t.age_hours)}h · ${esc(t.messages_count)} msgs</span>
+        <span class="spacer"></span>
+        <span class="phone">${esc(t.phone)}</span>
+      </div>
+      ${msgs}
+      <div class="relay">
+        <code id="relay-${esc(t.id)}">${esc(t.relay)}</code>
+        <button class="btn-mini" onclick="copyRelay('${esc(t.id)}')">Copy</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function copyRelay(id){
+  const el = $("relay-" + id);
+  navigator.clipboard.writeText(el.textContent).then(() => {
+    el.textContent += "  ✓";
+    setTimeout(load, 900);
+  });
+}
+
+function renderDead(d){
+  const rows = d.dead_letters_recent || [];
+  if (!rows.length){
+    $("dead").innerHTML = `<div class="quiet">No dead letters. ✅</div>`;
+    return;
+  }
+  $("dead").innerHTML = `<table>
+    <tr><th>message</th><th>phone</th><th>tries</th><th>error</th>
+        <th>when</th><th></th></tr>
+    ${rows.map(r => `
+    <tr>
+      <td class="mono">${esc((r.message_id || "").slice(0, 18))}…</td>
+      <td class="mono">${esc(r.phone || "")}</td>
+      <td class="mono">${esc(r.attempts ?? "")}</td>
+      <td><div class="err-txt">${esc(r.last_error || "")}</div></td>
+      <td class="mono">${esc((r.created_at || "").slice(5, 16).replace("T", " "))}</td>
+      <td>${r.replayable
+          ? `<button class="btn-mini" onclick="replay('${esc(r.message_id)}')">Replay</button>`
+          : `<span class="quiet">n/a</span>`}</td>
+    </tr>`).join("")}
+  </table>`;
+}
+
+async function replay(messageId){
+  try{
+    const r = await fetch(`/admin/ops/dead-letters/${encodeURIComponent(messageId)}/replay`,
+                          {method: "POST", headers: headers()});
+    const j = await r.json().catch(() => ({}));
+    stamp(j.replayed ? `replayed ${messageId.slice(0, 12)}…`
+                     : `replay refused: ${j.reason || r.status}`);
+  }catch(e){ stamp("replay failed: " + e); }
+  load();
+}
+
+function kvPanel(title, obj){
+  const keys = Object.keys(obj || {});
+  const rows = keys.length
+    ? keys.map(k => `<div class="kv"><span>${esc(k)}</span><b>${esc(obj[k])}</b></div>`).join("")
+    : `<div class="quiet">none yet</div>`;
+  return `<div class="panel"><h3>${esc(title)}</h3>${rows}</div>`;
+}
+
+function renderCounters(d){
+  const bookings = {};
+  Object.entries(d.bookings || {}).forEach(([k, v]) => bookings[k] = v);
+  $("counters").innerHTML =
+      kvPanel("Inbound by status", (d.inbound || {}).by_status) +
+      kvPanel("Delivery receipts", (d.delivery_receipts || {}).by_status) +
+      kvPanel("Beeps", {total: (d.beeps || {}).total,
+                        active: (d.beeps || {}).active,
+                        paused: (d.beeps || {}).paused}) +
+      kvPanel("Bookings", bookings);
+}
+
+async function load(){
+  try{
+    const r = await fetch("/admin/ops", {headers: headers()});
+    if (r.status === 404){
+      sessionStorage.removeItem(TOKEN_KEY);
+      forget();
+      $("gateErr").textContent = "Token rejected (404) — check it and try again.";
+      return;
+    }
+    if (r.status >= 500){
+      // Infra trouble upstream (e.g. a Supabase DNS blip). Keep the
+      // last good render on screen and say so - never a blank page.
+      stamp("backend trouble (" + r.status + ") — showing last good data, retrying");
+      return;
+      }
+    const d = await r.json();
+    renderStrip(d);
+    renderThreads(d);
+    renderDead(d);
+    renderCounters(d);
+    stamp("updated " + new Date().toLocaleTimeString());
+  }catch(e){ stamp("load failed: " + e); }
+}
+
+$("unlock").addEventListener("click", unlock);
+$("token").addEventListener("keydown", e => { if (e.key === "Enter") unlock(); });
+$("forget").addEventListener("click", forget);
+$("refresh").addEventListener("click", load);
+if (token()){ $("token").value = token(); enterCockpit(); }
+</script>
+</body>
+</html>

@@ -15,7 +15,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from FareBeep import main
-from FareBeep.models import Base, ProcessedMessage, SessionStatus, \
+from FareBeep.models import Base, ChatState, ProcessedMessage, SessionStatus, \
     Subscription, User, utcnow
 
 
@@ -64,6 +64,26 @@ def test_admin_closed_without_token(client, monkeypatch):
     assert r.status_code == 404
 
 
+def test_cockpit_page_gate_and_shell(client, monkeypatch):
+    """The cockpit shell follows the same closed-surface rule: 404 when
+    ADMIN_TOKEN is unset (even with a header). When open, the page is
+    served no-store and must NOT contain the token - the data still
+    demands the header via fetch."""
+    monkeypatch.setattr(main, "ADMIN_TOKEN", None)
+    assert client.get("/admin", headers=H).status_code == 404
+    assert client.get("/admin").status_code == 404
+
+    monkeypatch.setattr(main, "ADMIN_TOKEN", "test-admin-token")
+    r = client.get("/admin")
+    assert r.status_code == 200
+    assert "Ops cockpit" in r.text
+    assert "test-admin-token" not in r.text
+    assert r.headers["cache-control"] == "no-store"
+    assert client.get("/admin",
+                      headers={"X-Admin-Token": "nope"}).status_code == 200, \
+        "the shell is public-ish; the DATA is what the token guards"
+
+
 def test_admin_wrong_token_404(client):
     assert client.get("/admin/ops",
                       headers={"X-Admin-Token": "nope"}).status_code == 404
@@ -97,6 +117,35 @@ def test_ops_snapshot_reflects_state(client, session_factory):
     assert dead["DL1"]["attempts"] == 3
     assert snap["beeps"] == {"total": 2, "active": 1, "paused": 1}
     assert snap["bookings"] == {}
+
+
+def test_ops_support_rows_carry_transcript_and_relay(client, session_factory):
+    """The cockpit's loop-closer: an open thread surfaces with its
+    transcript tail and the exact relay command, so the human reads
+    context and answers without leaving the page."""
+    db = session_factory()
+    db.add(ChatState(phone="+234801", support_ticket={
+        "id": "SUP-ABC123", "opened_at": utcnow().isoformat(),
+        "trigger": "auto: payment/refund", "status": "open",
+        "messages": [
+            {"side": "user", "at": utcnow().isoformat(),
+             "text": "I was charged twice"},
+            {"side": "admin", "at": utcnow().isoformat(),
+             "text": "checking now"},
+        ]}))
+    db.commit()
+    db.close()
+
+    snap = client.get("/admin/ops", headers=H).json()
+    rows = snap["support"]["open_threads"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == "SUP-ABC123"
+    assert row["phone"] == "+234801"
+    assert row["messages_count"] == 2
+    assert [m["side"] for m in row["messages"]] == ["user", "admin"]
+    assert row["messages"][0]["text"] == "I was charged twice"
+    assert row["relay"] == "R +234801 "
 
 
 def test_replay_redispatches_and_marks_done(client, session_factory,

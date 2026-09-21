@@ -53,10 +53,11 @@ from FareBeep.config import (ADMIN_TOKEN, APP_BASE_URL, CONSENT_VERSION,
                              META_VERIFY_TOKEN, RATE_LIMIT_PER_MIN,
                              REQUOTE_TOLERANCE_NGN, TRAVELS247_EMAIL,
                              TRAVELS247_PASSWORD, ELEVENLABS_TOOL_SECRET,
-                             GROQ_API_KEY, GUIDED_MODE)
+                             GROQ_API_KEY, GUIDED_MODE,
+                             SUPPORT_TICKET_TTL_HOURS)
 from FareBeep.database import SessionLocal, init_db
 from FareBeep.iata import city_name, resolve_iata
-from FareBeep.models import (BookingSession, DeliveryReceipt,
+from FareBeep.models import (BookingSession, ChatState, DeliveryReceipt,
                              ProcessedMessage, Subscription, User, utcnow)
 from FareBeep.notifier import MetaWhatsapp, get_notifier
 from FareBeep.payments import verify_paystack_signature
@@ -1104,6 +1105,7 @@ def _handle_stop(db, user: User) -> None:
     chatstate.clear_last_fare(db, user.phone)
     chatstate.clear_last_fares(db, user.phone)
     chatstate.clear_agent_history(db, user.phone)
+    chatstate.clear_support_ticket(db, user.phone)
     if removed:
         _say(user.phone,
              f"🔕 Stopped - all {removed} price alert(s) removed and your "
@@ -1114,6 +1116,376 @@ def _handle_stop(db, user: User) -> None:
              "You have no active price alerts - nothing to stop. "
              "Your chat data is cleared anyway.",
              user.name)
+
+
+# ---------------------------------------------------------------------------
+# Human support relay (Phase 1) - the founder IS the support desk.
+# An explicit human ask (SUPPORT / "speak to a human"), a refund or
+# payment-failure phrase, or two agent failures in a row opens a thread
+# in the user's ChatState row and pings ADMIN_ALERT_PHONE with context.
+# The founder answers from their own chat: "R <phone> <text>" relays,
+# /open lists threads, /done [phone] closes one. No helpdesk vendor, no
+# queue UI - capture, relay, close. (A SupportTicket table earns its
+# keep only when volume makes history worth querying.)
+# ---------------------------------------------------------------------------
+_SUPPORT_PATTERNS = (
+    r"\bsupport\b",
+    r"\bspeak to (a |an )?(human|agent|person)\b",
+    r"\btalk to (a |an )?(human|agent|person)\b",
+    r"\bhuman agent\b",
+    r"\bcustomer (care|service|support)\b",
+    r"\brefund\b", r"\bcharged twice\b", r"\bdouble.?charg",
+    r"\bpayment (failed|fail|issue|problem)\b", r"\bfailed payment\b",
+    r"\bdidn'?t (get|receive) (my |the )?(ticket|booking)\b",
+    r"\bmoney back\b", r"\bscam\b",
+)
+_support_res = [re.compile(p, re.IGNORECASE) for p in _SUPPORT_PATTERNS]
+_SUPPORT_CLOSE_WORDS = frozenset({
+    "cancel support", "end support", "resolved", "solved",
+    "it works now", "all good now", "no longer needed",
+})
+_SUPPORT_RELAY_RE = re.compile(r"^R\s+(\+?\d[\d\s\-]{6,})\s+(.+)$",
+                               re.IGNORECASE | re.DOTALL)
+_support_frustration: dict = {}   # phone -> consecutive agent failures
+
+
+def _admin_phone() -> str:
+    """Lazily read (tests flip the env per case)."""
+    from FareBeep.config import ADMIN_ALERT_PHONE
+    return ADMIN_ALERT_PHONE or ""
+
+
+def _norm_phone(s) -> str:
+    return re.sub(r"[\s\-\(\)]", "", str(s or "")).strip()
+
+
+def _is_support_ask(text: str) -> bool:
+    """Explicit human ask or money-trouble phrase. Negated phrasing
+    ('don't refund me') never triggers - same guard as STOP."""
+    flat = (text or "").strip().lower()
+    if not flat or _looks_negated(flat):
+        return False
+    return any(rx.search(flat) for rx in _support_res)
+
+
+def _ticket_is_open(ticket) -> bool:
+    return bool(ticket) and ticket.get("status") == "open"
+
+
+def _ticket_age_hours(ticket) -> float:
+    from datetime import datetime
+    try:
+        opened = datetime.fromisoformat(str(ticket.get("opened_at")))
+        return (utcnow() - opened).total_seconds() / 3600.0
+    except Exception:
+        return 0.0
+
+
+def _support_append(db, phone: str, side: str, text: str) -> dict:
+    """Append one turn to the thread (capped) and persist."""
+    ticket = chatstate.get_support_ticket(db, phone) or {}
+    msgs = ticket.setdefault("messages", [])
+    msgs.append({"side": side, "at": utcnow().isoformat(),
+                 "text": (text or "")[:400]})
+    ticket["messages"] = msgs[-12:]
+    chatstate.set_support_ticket(db, phone, ticket)
+    return ticket
+
+
+def _support_alert(db, user: User, ticket: dict) -> str:
+    """The ops alert: who, why, context, and the exact reply syntax."""
+    fare = chatstate.get_last_fare(db, user.phone) or {}
+    fare_line = "none this chat"
+    if fare:
+        try:
+            price = f"\u20a6{float(fare.get('price') or 0):,.0f}"
+        except Exception:
+            price = str(fare.get("price"))
+        fare_line = (f"{fare.get('origin_iata', '?')}->"
+                     f"{fare.get('destination_iata', '?')} "
+                     f"{fare.get('flight_date', '')} {price}")
+    try:
+        n_beeps = db.query(Subscription).filter(
+            Subscription.user_id == user.user_id,
+            Subscription.paused.is_(False)).count()
+    except Exception:
+        n_beeps = 0
+    channel = "WhatsApp" if str(user.phone).startswith("+") else "Telegram"
+    lines = [f"\U0001f3a7 SUPPORT {ticket.get('id')} - "
+             f"{user.name or 'Unknown'} ({user.phone}, {channel})",
+             f"Trigger: {ticket.get('trigger', 'explicit')}",
+             f"Fare context: {fare_line} | Active beeps: {n_beeps}"]
+    msgs = ticket.get("messages") or []
+    last_text = (msgs[-1].get("text", "") if msgs else "").strip()
+    if last_text:
+        lines.append(f"Says: \"{last_text[:400]}\"")
+    lines.append(f"Reply: R {user.phone} <message> | /open | "
+                 f"/done {user.phone}")
+    return "\n".join(lines)
+
+
+def _open_support_ticket(db, user: User, text: str, trigger: str) -> dict:
+    ticket = {
+        "id": "SUP-" + uuid.uuid4().hex[:6].upper(),
+        "opened_at": utcnow().isoformat(),
+        "trigger": trigger,
+        "status": "open",
+        "messages": [],
+    }
+    if text:
+        ticket["messages"].append({"side": "user",
+                                   "at": utcnow().isoformat(),
+                                   "text": text[:400]})
+    chatstate.set_support_ticket(db, user.phone, ticket)
+    _say(user.phone,
+         "You've reached a human \U0001f3a7 - the FareBeep founder replies "
+         "right here in this chat, usually within a few hours. Your "
+         "message and trip context are attached, so no need to repeat "
+         "yourself. You can still search fares meanwhile - reply "
+         "CANCEL SUPPORT to hand back to the bot.",
+         user.name, humanized=True)
+    _notify_admin(_support_alert(db, user, ticket))
+    return ticket
+
+
+def _trigger_label(text: str) -> str:
+    flat = (text or "").lower()
+    if any(w in flat for w in ("refund", "charged", "double", "scam",
+                               "payment", "money", "debited", "deducted")):
+        return "auto: payment/refund"
+    return "explicit ask"
+
+
+def _handle_support(db, user: User, text: str) -> bool:
+    """The support gate. True = turn consumed. A fresh ask opens a
+    thread; while one is open the user's words relay to the founder
+    (the bot must not talk over a live human conversation). Stale
+    threads (>SUPPORT_TICKET_TTL_HOURS) auto-close on touch."""
+    ticket = chatstate.get_support_ticket(db, user.phone)
+    if _ticket_is_open(ticket) and \
+            _ticket_age_hours(ticket) > SUPPORT_TICKET_TTL_HOURS:
+        ticket["status"] = "stale"
+        chatstate.set_support_ticket(db, user.phone, ticket)
+        _say(user.phone,
+             "(The earlier support thread was closed automatically "
+             "after 48h - reply SUPPORT anytime to open a fresh one.)",
+             user.name, humanized=True)
+        ticket = chatstate.get_support_ticket(db, user.phone)
+    flat = (text or "").strip().lower().rstrip("!.,?").strip()
+    close = flat in _SUPPORT_CLOSE_WORDS or flat.startswith(
+        ("solved", "resolved", "cancel support", "end support"))
+    if close:
+        if not _ticket_is_open(ticket):
+            return False          # no thread: falls through to the bot
+        ticket["status"] = "resolved"
+        ticket["closed_at"] = utcnow().isoformat()
+        chatstate.set_support_ticket(db, user.phone, ticket)
+        _notify_admin(f"\u2705 {ticket.get('id')} closed BY USER "
+                      f"({user.phone}).")
+        _say(user.phone,
+             "Support thread closed - glad we could sort it. Reply "
+             "SUPPORT anytime if anything else comes up. \U0001f41d",
+             user.name, humanized=True)
+        return True
+    if _is_support_ask(text):
+        if _ticket_is_open(ticket):
+            _support_append(db, user.phone, "user", text)
+            _notify_admin(f"\U0001f4e8 {ticket.get('id')} ({user.phone}) "
+                          f"added: \"{(text or '')[:200]}\"")
+        else:
+            _open_support_ticket(db, user, text, trigger=_trigger_label(text))
+        return True
+    if _ticket_is_open(ticket):
+        # Human owns this thread: everything (the commands that could
+        # still run ran above) reaches the founder's chat.
+        _support_append(db, user.phone, "user", text)
+        _notify_admin(f"\U0001f4e8 {ticket.get('id')} ({user.phone}) says: "
+                      f"\"{(text or '')[:200]}\"")
+        return True
+    return False
+
+
+def _has_open_support(phone: str) -> bool:
+    """Throttle-exemption probe - only called on the burst path. Best
+    effort: burst control is process-local and must never depend on the
+    DB being up, so a lookup failure just means the throttle applies."""
+    try:
+        db = SessionLocal()
+        try:
+            return _ticket_is_open(chatstate.get_support_ticket(db, phone))
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("support throttle-exempt lookup failed: %s", e)
+        return False
+
+
+def _resolve_target(db, token: str):
+    """Admin typed a number possibly without the leading '+': exact
+    User.phone first, then the '+' variant. Telegram chat ids match
+    exactly. Unknown tokens are refused - never blast a guess."""
+    tok = _norm_phone(token)
+    if not tok:
+        return None
+    row = db.query(User).filter(User.phone == tok).first()
+    if row is None and tok.isdigit():
+        row = db.query(User).filter(User.phone == "+" + tok).first()
+    return row.phone if row else None
+
+
+def _relay_admin_reply(admin_phone: str, token: str, body: str) -> bool:
+    db = SessionLocal()
+    try:
+        target = _resolve_target(db, token)
+        if target is None:
+            _say(admin_phone, f"Unknown user \"{token}\" - no chat "
+                 f"found. /open lists threads.", humanized=True)
+            return True
+        ticket = _support_append(db, target, "admin", body)
+    finally:
+        db.close()
+    _say(target, f"\U0001f3a7 FareBeep support: {body}", humanized=True)
+    status = ticket.get("status")
+    hint = "" if status == "open" else \
+        f" (note: thread was {status}; /done {target} closes it)"
+    _say(admin_phone, f"\u2192 sent to {target}{hint}", humanized=True)
+    return True
+
+
+def _admin_list_tickets(admin_phone: str) -> bool:
+    db = SessionLocal()
+    try:
+        rows = db.query(ChatState).filter(
+            ChatState.support_ticket.isnot(None)).all()
+        open_rows = [(r.phone, r.support_ticket) for r in rows
+                     if _ticket_is_open(r.support_ticket)]
+    finally:
+        db.close()
+    if not open_rows:
+        _say(admin_phone, "No open support threads. \U0001f389",
+             humanized=True)
+        return True
+    lines = []
+    for ph, tk in open_rows:
+        msgs = tk.get("messages") or []
+        last = msgs[-1].get("text", "") if msgs else ""
+        lines.append(f"{tk.get('id')} | {ph} | {tk.get('trigger')} | "
+                     f"{_ticket_age_hours(tk):.0f}h | \"{last[:60]}\"")
+    _say(admin_phone, "Open support threads:\n" + "\n".join(lines) +
+         "\n\nRelay: R <phone> <message> | Close: /done <phone>",
+         humanized=True)
+    return True
+
+
+def _admin_close_ticket(admin_phone: str, token: str) -> bool:
+    db = SessionLocal()
+    try:
+        if token:
+            target = _resolve_target(db, token)
+            if target is None:
+                _say(admin_phone, f"Unknown user \"{token}\".",
+                     humanized=True)
+                return True
+            ticket = chatstate.get_support_ticket(db, target)
+            if not _ticket_is_open(ticket):
+                _say(admin_phone, f"No open thread for {target}.",
+                     humanized=True)
+                return True
+        else:
+            rows = db.query(ChatState).filter(
+                ChatState.support_ticket.isnot(None)).all()
+            open_rows = [(r.phone, r.support_ticket) for r in rows
+                         if _ticket_is_open(r.support_ticket)]
+            if not open_rows:
+                _say(admin_phone, "No open support threads.",
+                     humanized=True)
+                return True
+            if len(open_rows) > 1:
+                _say(admin_phone,
+                     f"{len(open_rows)} threads open - say "
+                     f"/done <phone>. /open lists them.", humanized=True)
+                return True
+            target, ticket = open_rows[0]
+        ticket["status"] = "resolved"
+        ticket["closed_at"] = utcnow().isoformat()
+        chatstate.set_support_ticket(db, target, ticket)
+        tid = ticket.get("id")
+    finally:
+        db.close()
+    _say(target, "Support thread closed - glad we could sort it. Reply "
+                 "SUPPORT anytime if anything else comes up. \U0001f41d",
+         humanized=True)
+    _say(admin_phone, f"Closed {tid} ({target}).", humanized=True)
+    return True
+
+
+def _handle_admin_console(phone: str, text: str) -> bool:
+    """Founder powers, riding the same webhook as everyone else.
+    Only ADMIN_ALERT_PHONE holds them; anything else from that phone
+    falls through so the founder can still use the bot normally."""
+    admin = _admin_phone()
+    if not admin or _norm_phone(phone) != _norm_phone(admin):
+        return False
+    t = (text or "").strip()
+    m = _SUPPORT_RELAY_RE.match(t)
+    if m:
+        return _relay_admin_reply(phone, m.group(1), m.group(2).strip())
+    up = t.upper()
+    if up == "/OPEN" or up.startswith("/OPEN "):
+        return _admin_list_tickets(phone)
+    if up == "/DONE" or up.startswith("/DONE "):
+        return _admin_close_ticket(phone, t[5:].strip())
+    return False
+
+
+def _note_agent_outcome(phone: str, ok: bool) -> None:
+    """Two consecutive agent failures on one phone = the user got no
+    answer twice - open a support thread automatically (the bot must
+    not fail silently into a void)."""
+    if ok:
+        _support_frustration.pop(phone, None)
+        return
+    n = _support_frustration.get(phone, 0) + 1
+    _support_frustration[phone] = n
+    if n < 2:
+        return
+    _support_frustration.pop(phone, None)
+    try:
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.phone == phone).first()
+            if user is None or _ticket_is_open(
+                    chatstate.get_support_ticket(db, phone)):
+                return
+            _open_support_ticket(db, user, "",
+                                 trigger="auto: bot failed twice")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("auto support-open after agent failures failed: %s", e)
+
+
+def _ops_support_rows(db) -> list:
+    """Open/stale threads for the ops cockpit: identity, trigger, and the
+    transcript tail so the human can read context before replying.
+    (Small table: filter in Python - dialect-proof.)"""
+    out = []
+    for r in db.query(ChatState).filter(
+            ChatState.support_ticket.isnot(None)).all():
+        tk = r.support_ticket or {}
+        if tk.get("status") in ("open", "stale"):
+            out.append({
+                "id": tk.get("id"), "phone": r.phone,
+                "trigger": tk.get("trigger"),
+                "status": tk.get("status"),
+                "age_hours": round(_ticket_age_hours(tk), 1),
+                "messages_count": len(tk.get("messages") or []),
+                "messages": [{"side": m.get("side"), "text": m.get("text"),
+                              "at": m.get("at")}
+                             for m in (tk.get("messages") or [])[-6:]],
+                "relay": f"R {r.phone} ",
+            })
+    return out
 
 
 # Watch helpers (list/match/format) live in alerts.py next to the
@@ -1211,6 +1583,12 @@ def _rate_allow(phone: str, text: str) -> bool:
     hits = [t for t in _rate_hits.get(phone, [])
             if now - t < _RATE_WINDOW]
     if len(hits) >= _RATE_LIMIT:
+        if _has_open_support(phone):
+            # A live support thread bypasses the throttle (like STOP):
+            # burst control must never silence a human conversation.
+            hits.append(now)
+            _rate_hits[phone] = hits
+            return True
         _rate_hits[phone] = hits
         if now - _rate_cooled.get(phone, -_RATE_WINDOW) >= _RATE_WINDOW:
             _rate_cooled[phone] = now
@@ -1223,6 +1601,11 @@ def _rate_allow(phone: str, text: str) -> bool:
 
 def _handle_incoming_message(phone: str, text: str) -> None:
     """PASS 2 - CONCIERGE LOGIC: intent -> ask / search / act -> reply."""
+    # ADMIN CONSOLE first: /open, /done and R <phone> <text> relays are
+    # consumed here - they never reach the throttle or the concierge,
+    # and never create a User row for the admin phone.
+    if _handle_admin_console(phone, text):
+        return
     if not _rate_allow(phone, text):
         return
     db = SessionLocal()
@@ -1323,15 +1706,26 @@ def _handle_incoming_message(phone: str, text: str) -> None:
                 return
             if _handle_my_bookings(db, user, text):
                 return
+
+            # SUPPORT RELAY: an explicit human ask, a refund/payment
+            # phrase, or a live thread hands the turn to the founder's
+            # own chat. AFTER the financial gates (a "cancel" answer to
+            # a price question must never become a ticket) and BEFORE
+            # the agent - the agent must never talk a refund demand
+            # down alone.
+            if _handle_support(db, user, text):
+                return
             if GROQ_API_KEY and not guided:
                 from FareBeep import agent as fare_agent
                 try:
                     _say(phone, fare_agent.agent_reply(db, user, text),
                          user.name, humanized=True)
                     _agent_stats["groq_ok"] += 1
+                    _note_agent_outcome(phone, ok=True)
                     return
                 except Exception as e:
                     _agent_stats["groq_fail"] += 1
+                    _note_agent_outcome(phone, ok=False)
                     logger.warning("Groq agent failed (%s) - guided "
                                    "fallback: %s", phone, e)
                     guided = True
@@ -2333,6 +2727,7 @@ def admin_ops(request: Request):
                 "paused": sum(1 for s in subs if s.paused),
             },
             "bookings": {str(getattr(k, "value", k)): v for k, v in bookings},
+            "support": {"open_threads": _ops_support_rows(db)},
             "agent_this_process": dict(_agent_stats),
         }
     finally:
@@ -3281,6 +3676,34 @@ mimetypes.add_type("image/avif", ".avif")
 app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
 
 
+@app.get("/og.png", include_in_schema=False)
+def og_image():
+    """The social-share card. Meta/WhatsApp/Twitter crawlers ignore SVG,
+    so the SVG source is rendered to PNG once and cached in memory."""
+    import struct, zlib
+    png_path = WEB_DIR / "og.png"
+    if not png_path.exists():
+        png_path = WEB_DIR / "og.svg"
+    return FileResponse(png_path, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/", include_in_schema=False)
 def landing():
-    return FileResponse(WEB_DIR / "index.html")
+    # no-cache (revalidate, not no-store): HTML must never go stale -
+    # assets carry their own versioned URLs and cache hard instead.
+    return FileResponse(WEB_DIR / "index.html",
+                        headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/admin", include_in_schema=False)
+def admin_cockpit():
+    """The ops cockpit - a browser UI over /admin/ops + dead-letter
+    replay. Only the SHELL is served here (when ADMIN_TOKEN is set);
+    the data still demands the X-Admin-Token header via fetch, so the
+    token never rides a URL or a log. Unset token = closed surface
+    (404, like every admin route)."""
+    if not ADMIN_TOKEN:
+        return Response(status_code=404)
+    return FileResponse(WEB_DIR / "admin.html",
+                        headers={"Cache-Control": "no-store"})

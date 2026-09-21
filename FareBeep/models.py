@@ -109,8 +109,12 @@ class ChatState(Base):
                                                     #  fallback collecting ticket-holder
                                                     #  details the /book page missed
     agent_history = Column(JSON, nullable=True)    # [{role, content}...] - the
-                                                    #  Groq agent's rolling chat
-                                                    #  memory (last turns only)
+                                                 # Groq agent's rolling chat
+                                                 # memory (last turns only)
+    support_ticket = Column(JSON, nullable=True)   # {id, opened_at, trigger,
+                                                 # status, messages: [...]} -
+                                                 # the human-support relay
+                                                 # thread (Phase 1: no table)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 

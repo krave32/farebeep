@@ -129,3 +129,23 @@ def clear_agent_history(db, phone: str) -> None:
     session must not resurrect the old thread conversationally). The
     User row (name, identity) is untouched - only chat memory goes."""
     _write(db, phone, "agent_history", [])
+
+
+# --- Support relay (Phase 1) ------------------------------------------------
+# A human-support thread rides the per-phone ChatState row: one JSON slot,
+# same read-modify-write discipline as every other slot. Deliberately NOT a
+# SupportTicket table yet - the founder IS the support desk, and a table
+# earns its keep only when volume makes history worth querying.
+
+
+def get_support_ticket(db, phone: str):
+    """The open (or last) support thread for this phone, or None."""
+    return _read(db, phone, "support_ticket")
+
+
+def set_support_ticket(db, phone: str, ticket) -> None:
+    _write(db, phone, "support_ticket", ticket)
+
+
+def clear_support_ticket(db, phone: str) -> None:
+    _write(db, phone, "support_ticket", None)
