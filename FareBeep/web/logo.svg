@@ -1,8 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <!-- FareBeep mark (restored): double radar arcs + beam + plane + ping dot.
+       Refinement: thin pine outline on the plane so it stays crisp over the beam
+       at small sizes; geometry otherwise untouched from the original mark. -->
   <rect width="100" height="100" rx="20" fill="#0e3b2c"/>
   <path d="M61.2 30.8 A30 30 0 1 0 61.2 73.2" stroke="#d8e95b" stroke-width="8" stroke-linecap="round"/>
   <path d="M52.7 39.3 A18 18 0 1 0 52.7 64.7" stroke="#d8e95b" stroke-width="8" stroke-linecap="round"/>
   <path d="M30 76 L74 30" stroke="#d8e95b" stroke-width="6" stroke-linecap="round"/>
-  <path d="M34 51 L60 42 L46 58 L44 52 Z" fill="#eaf4e0"/>
+  <path d="M34 51 L60 42 L46 58 L44 52 Z" fill="#eaf4e0" stroke="#0e3b2c" stroke-width="1.6" stroke-linejoin="round"/>
   <circle cx="80" cy="24" r="9" fill="#d8e95b"/>
 </svg>

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none">
+  <!-- FareBeep social card: the mark, the highlight-box headline, the bot handle.
+       Palette = the Kivi poster colors; served at /og.png (SVG source, rendered
+       to PNG for crawlers that demand a raster image). -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0e3b2c"/>
+      <stop offset="1" stop-color="#0a2d21"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- faint grid, like the hero -->
+  <g stroke="#1d5040" stroke-width="1">
+    <path d="M100 0V630M250 0V630M400 0V630M550 0V630M700 0V630M850 0V630M1000 0V630M1150 0V630"/>
+    <path d="M0 90H1200M0 210H1200M0 330H1200M0 450H1200M0 570H1200"/>
+  </g>
+
+  <!-- mark, large, left -->
+  <g transform="translate(90 205) scale(2.3)">
+    <path d="M61.2 30.8 A30 30 0 1 0 61.2 73.2" stroke="#d8e95b" stroke-width="8" stroke-linecap="round"/>
+    <path d="M52.7 39.3 A18 18 0 1 0 52.7 64.7" stroke="#d8e95b" stroke-width="8" stroke-linecap="round"/>
+    <path d="M30 76 L74 30" stroke="#d8e95b" stroke-width="6" stroke-linecap="round"/>
+    <path d="M34 51 L60 42 L46 58 L44 52 Z" fill="#eaf4e0" stroke="#0e3b2c" stroke-width="1.6" stroke-linejoin="round"/>
+    <circle cx="80" cy="24" r="9" fill="#d8e95b"/>
+  </g>
+
+  <!-- kicker -->
+  <text x="480" y="228" font-family="Consolas, Menlo, monospace" font-size="24"
+        letter-spacing="6" fill="#9db8a4">NIGERIA DOMESTIC FLIGHTS · IN CHAT</text>
+
+  <!-- headline -->
+  <text x="480" y="320" font-family="Plus Jakarta Sans, Segoe UI, sans-serif"
+        font-size="76" font-weight="800" fill="#eef3e2" letter-spacing="-2">Say the route.</text>
+
+  <!-- highlight box line -->
+  <rect x="476" y="344" width="560" height="96" fill="#d8e95b"/>
+  <text x="502" y="410" font-family="Plus Jakarta Sans, Segoe UI, sans-serif"
+        font-size="76" font-weight="800" fill="#0e3b2c" letter-spacing="-2">Lock the fare.</text>
+
+  <!-- bot handle -->
+  <text x="480" y="520" font-family="Consolas, Menlo, monospace" font-size="28"
+        fill="#cfe05c">@FareBeep_bot</text>
+</svg>
