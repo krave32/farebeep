@@ -142,6 +142,18 @@ GUIDED_MODE = _get("GUIDED_MODE", "") == "1"
 TRAVELS247_BASE_URL = _get("TRAVELS247_BASE_URL", "https://247travels.com/api")
 TRAVELS247_EMAIL = _get("TRAVELS247_EMAIL")
 TRAVELS247_PASSWORD = _get("TRAVELS247_PASSWORD")
+# "live" (default) or "test" - test credentials must never cache fares into
+# the Shared Ledger: baselines drive real beeps, and a demo baseline can
+# trigger fake alerts. The warmer refuses to run in test mode.
+TRAVELS247_MODE = _get("TRAVELS247_MODE", "live")
+
+# --- Inventory supplier (see FareBeep/suppliers.py) ---
+# "travels247" (default) or "quickair" - one flip switches the whole
+# inventory side; both clients return the same normalized offers.
+INVENTORY_PROVIDER = _get("INVENTORY_PROVIDER", "travels247")
+QUICKAIR_BASE_URL = _get("QUICKAIR_BASE_URL", "https://quickair.app/api")
+QUICKAIR_EMAIL = _get("QUICKAIR_EMAIL")
+QUICKAIR_PASSWORD = _get("QUICKAIR_PASSWORD")
 
 # --- Business rules ---
 MARKUP_NAIRA = _get_float("MARKUP_NAIRA", 3000.0)

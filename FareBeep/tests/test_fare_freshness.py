@@ -262,7 +262,7 @@ def test_agent_ledger_summary_labels_cached(db, user, monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("ledger hit must not call live")
 
-    monkeypatch.setattr(agent_mod, "Travels247Client", _boom)
+    monkeypatch.setattr(agent_mod, "get_inventory_client", _boom)
     tools = {t.name: t for t in build_tools(db, user.phone)}
     out = json.loads(tools["search_fares"].invoke(
         {"origin": "LOS", "destination": "ABV",
@@ -295,7 +295,7 @@ def test_agent_reserve_summary_holds(db, user, monkeypatch):
         async def close(self):
             pass
 
-    monkeypatch.setattr(agent_mod, "Travels247Client",
+    monkeypatch.setattr(agent_mod, "get_inventory_client",
                         lambda *a, **k: _Fake247())
     tools = {t.name: t for t in build_tools(db, user.phone)}
     out = json.loads(tools["reserve_fare"].invoke(

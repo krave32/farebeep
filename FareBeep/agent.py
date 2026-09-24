@@ -38,7 +38,7 @@ from FareBeep.config import GROQ_API_KEY, GROQ_MODEL
 from FareBeep.iata import resolve_iata
 from FareBeep.models import User, utcnow
 from FareBeep.search import LedgerOnlyEngine, LedgerSearch
-from FareBeep.travels247 import Travels247Client, pick_cheapest
+from FareBeep.suppliers import get_inventory_client, pick_cheapest
 from FareBeep.transactions import BookingService, PaystackError
 
 logger = logging.getLogger("farebeep.agent")
@@ -365,7 +365,7 @@ def build_tools(db: Session, phone: str) -> list:
                 "price_ngn": hit["price"],
                 "note": ("Prices are unusually high right now."
                          if hit.get("above_guardrail") else None)})
-        sky = Travels247Client()
+        sky = get_inventory_client()
         offers = _run_async(_search_and_close(
             sky, o, d, date, n_adults))
         best = pick_cheapest(offers)
@@ -425,7 +425,7 @@ def build_tools(db: Session, phone: str) -> list:
         if user is None:
             return json.dumps({"locked": False,
                                "error": "unknown user - say hello first"})
-        sky = Travels247Client()
+        sky = get_inventory_client()
         try:
             priced = _run_async(_verify_and_close(
                 sky, booking_token, n_adults))

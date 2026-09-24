@@ -163,6 +163,8 @@
     <div id="dead"></div>
     <h2>Counters</h2>
     <div class="grid" id="counters"></div>
+    <h2>Shared Ledger</h2>
+    <div id="ledgerPanel"></div>
   </div>
 </div>
 
@@ -308,6 +310,42 @@ function kvPanel(title, obj){
   return `<div class="panel"><h3>${esc(title)}</h3>${rows}</div>`;
 }
 
+async function warmNow(){
+  const btn = document.getElementById("warmBtn");
+  if (btn){ btn.disabled = true; btn.textContent = "Warming…"; }
+  stamp("warm cycle started (live searches — takes a while)");
+  try{
+    const r = await fetch("/admin/ops/ledger/warm-now",
+                          {method: "POST", headers: headers()});
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 404){ stamp("warm-now refused (bad token?)"); }
+    else if (j.ok){ stamp(`warmed: ${j.upserted} fares cached, ${j.skipped_surge} surge-skipped, ${j.misses} misses, ${j.errors} errors`); }
+    else { stamp(`warm cycle finished with trouble: ${j.error || JSON.stringify(j)}`); }
+  }catch(e){ stamp("warm-now failed: " + e); }
+  const b2 = document.getElementById("warmBtn");
+  if (b2){ b2.disabled = false; b2.textContent = "Warm ledger now"; }
+  load();
+}
+
+function renderLedger(d){
+  const l = d.ledger || {};
+  const box = document.getElementById("ledgerPanel");
+  if (!box) return;
+  if (l.rows === null || l.error){
+    box.innerHTML = `<div class="panel"><h3>Shared Ledger</h3>
+      <div class="quiet">unavailable: ${esc(l.error || "unknown")}</div></div>`;
+    return;
+  }
+  const freshPct = l.rows ? Math.round(100 * l.fresh_24h / l.rows) : 0;
+  box.innerHTML = `<div class="panel"><h3>Shared Ledger</h3>
+    <div class="kv"><span>cached fares</span><b>${esc(l.rows)}</b></div>
+    <div class="kv"><span>fresh &lt;24h</span><b>${esc(l.fresh_24h)} (${freshPct}%)</b></div>
+    <div class="kv"><span>warm routes covered</span><b>${esc(l.warm_routes_covered)}</b></div>
+    <div class="kv"><span>newest fare</span><b>${esc((l.newest_fare_at || "—").replace("T", " ").slice(0, 16))}</b></div>
+    <button id="warmBtn" class="btn-mini" onclick="warmNow()">Warm ledger now</button>
+  </div>`;
+}
+
 function renderCounters(d){
   const bookings = {};
   Object.entries(d.bookings || {}).forEach(([k, v]) => bookings[k] = v);
@@ -340,6 +378,7 @@ async function load(){
     renderThreads(d);
     renderDead(d);
     renderCounters(d);
+    renderLedger(d);
     stamp("updated " + new Date().toLocaleTimeString());
   }catch(e){ stamp("load failed: " + e); }
 }

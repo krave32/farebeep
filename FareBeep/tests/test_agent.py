@@ -97,7 +97,7 @@ class FakeLLM:
 
 
 def _tools(db, user, monkeypatch, offers=None):
-    monkeypatch.setattr(agent_mod, "Travels247Client",
+    monkeypatch.setattr(agent_mod, "get_inventory_client",
                         lambda *a, **k: FakeTravels247(offers))
     return {t.name: t for t in build_tools(db, user.phone)}
 
@@ -160,7 +160,7 @@ def test_search_tool_dateless_returns_window_cheapest(db, user, monkeypatch):
     def _no_live(*a, **k):
         raise AssertionError("dateless search must stay on the ledger")
 
-    monkeypatch.setattr(agent_mod, "Travels247Client", _no_live)
+    monkeypatch.setattr(agent_mod, "get_inventory_client", _no_live)
     tools = {t.name: t for t in build_tools(db, user.phone)}
 
     import json
@@ -182,7 +182,7 @@ def test_search_tool_dateless_empty_ledger_asks_for_date(db, user, monkeypatch):
     def _no_live(*a, **k):
         raise AssertionError("dateless search must stay on the ledger")
 
-    monkeypatch.setattr(agent_mod, "Travels247Client", _no_live)
+    monkeypatch.setattr(agent_mod, "get_inventory_client", _no_live)
     tools = {t.name: t for t in build_tools(db, user.phone)}
 
     import json
@@ -224,7 +224,7 @@ def test_reserve_tool_refuses_without_name(db, user, monkeypatch):
 
 
 def test_agent_reply_runs_tool_then_answers(db, user, monkeypatch):
-    monkeypatch.setattr(agent_mod, "Travels247Client",
+    monkeypatch.setattr(agent_mod, "get_inventory_client",
                         lambda *a, **k: FakeTravels247())
     llm = FakeLLM([
         ("search_fares", {"origin": "Lagos", "destination": "Abuja",
@@ -241,7 +241,7 @@ def test_agent_reply_runs_tool_then_answers(db, user, monkeypatch):
 
 
 def test_agent_reply_carries_history_into_next_turn(db, user, monkeypatch):
-    monkeypatch.setattr(agent_mod, "Travels247Client",
+    monkeypatch.setattr(agent_mod, "get_inventory_client",
                         lambda *a, **k: FakeTravels247())
     llm = FakeLLM(["first answer", "second answer"])
 
@@ -288,7 +288,7 @@ def test_repeated_tool_errors_get_trouble_not_fallback(db, user, monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("247travels down")
 
-    monkeypatch.setattr(agent_mod, "Travels247Client", _boom)
+    monkeypatch.setattr(agent_mod, "get_inventory_client", _boom)
     llm = FakeLLM([("search_fares", {"origin": "ABV",
                                      "destination": "PHC",
                                      "flight_date": "2026-09-08"})] * 4)
@@ -339,10 +339,10 @@ def test_live_search_and_close_share_one_loop(db, user, monkeypatch):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        real_cls = agent_mod.Travels247Client
+        from FareBeep.travels247 import Travels247Client as real_cls
         base = f"http://127.0.0.1:{server.server_port}/api"
         monkeypatch.setattr(
-            agent_mod, "Travels247Client",
+            agent_mod, "get_inventory_client",
             lambda *a, **k: real_cls(base_url=base, email="e@x.com",
                                      password="pw"))
         tools = {t.name: t for t in build_tools(db, user.phone)}

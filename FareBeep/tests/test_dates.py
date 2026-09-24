@@ -98,7 +98,7 @@ def _tools(db, user, monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("invalid dates must never reach live APIs")
 
-    monkeypatch.setattr(agent_mod, "Travels247Client", _boom)
+    monkeypatch.setattr(agent_mod, "get_inventory_client", _boom)
     return {t.name: t for t in build_tools(db, user.phone)}
 
 

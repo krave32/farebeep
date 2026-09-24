@@ -15,8 +15,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from FareBeep import main
-from FareBeep.models import Base, ChatState, ProcessedMessage, SessionStatus, \
-    Subscription, User, utcnow
+from FareBeep.models import Base, ChatState, FareLedger, ProcessedMessage, \
+    SessionStatus, Subscription, User, utcnow
 
 
 @pytest.fixture
@@ -117,6 +117,75 @@ def test_ops_snapshot_reflects_state(client, session_factory):
     assert dead["DL1"]["attempts"] == 3
     assert snap["beeps"] == {"total": 2, "active": 1, "paused": 1}
     assert snap["bookings"] == {}
+    # Ledger section: present, numeric, covers the warmer's routes.
+    led = snap["ledger"]
+    assert led["rows"] == 0                       # empty DB, but the section exists
+    assert led["fresh_24h"] == 0
+    assert led["warm_routes_covered"] == "0/24"   # current WARM_ROUTES length
+
+
+def test_ops_ledger_counts_warmed_routes(client, session_factory):
+    """Ledger warmth: rows/freshness counted, and a warmed route pair
+    shows up in warm_routes_covered so a cold ledger is visible at a
+    glance in the cockpit."""
+    from datetime import timedelta
+    db = session_factory()
+    now = utcnow()
+    db.add(FareLedger(origin="LOS", destination="ABV",
+                      flight_date="2026-10-01", price=96500.0,
+                      currency="NGN", last_updated=now))
+    db.add(FareLedger(origin="LOS", destination="ENU",
+                      flight_date="2026-10-02", price=78000.0,
+                      currency="NGN", last_updated=now - timedelta(days=3)))
+    db.commit()
+    db.close()
+
+    led = client.get("/admin/ops", headers=H).json()["ledger"]
+    assert led["rows"] == 2
+    assert led["fresh_24h"] == 1                  # only the 0-day-old row
+    assert led["warm_routes_covered"] == "2/24"
+    assert led["newest_fare_at"] is not None
+
+
+def test_warm_now_endpoint_requires_token(client, monkeypatch):
+    assert client.post("/admin/ops/ledger/warm-now").status_code == 404
+    assert client.post("/admin/ops/ledger/warm-now",
+                       headers={"X-Admin-Token": "wrong"}).status_code == 404
+
+
+def test_warm_now_runs_warmer_and_reports(client, monkeypatch):
+    """The endpoint resolves warmer.warm_ledger through its own module
+    import, so patching FareBeep.warmer.warm_ledger is what it sees."""
+    monkeypatch.setattr("FareBeep.warmer.warm_ledger",
+                        lambda: {"routes": 24, "dates": ["d"],
+                                 "upserted": 7, "skipped_surge": 1,
+                                 "misses": 2, "errors": 0})
+    r = client.post("/admin/ops/ledger/warm-now", headers=H)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["upserted"] == 7
+    assert body["misses"] == 2 and body["errors"] == 0
+
+
+def test_warm_now_refuses_in_test_mode(client, monkeypatch):
+    """Demo credentials must not cache fares - the endpoint says so with
+    a 409 and an actionable reason, not a silent empty success."""
+    monkeypatch.setattr("FareBeep.config.TRAVELS247_MODE", "test")
+    r = client.post("/admin/ops/ledger/warm-now", headers=H)
+    assert r.status_code == 409
+    body = r.json()
+    assert body["ok"] is False and "test" in body["reason"]
+
+
+def test_warm_now_surfaces_total_failure(client, monkeypatch):
+    """Login failure => warmer reports every job as an error; endpoint
+    returns ok False with 200 (the operation ran, the answer is 'no')."""
+    monkeypatch.setattr("FareBeep.warmer.warm_ledger",
+                        lambda: {"routes": 24, "dates": ["d"],
+                                 "upserted": 0, "skipped_surge": 0,
+                                 "misses": 0, "errors": 120})
+    body = client.post("/admin/ops/ledger/warm-now", headers=H).json()
+    assert body["ok"] is False and body["errors"] == 120
 
 
 def test_ops_support_rows_carry_transcript_and_relay(client, session_factory):

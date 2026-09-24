@@ -39,6 +39,7 @@ import threading
 import time
 import uuid
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
@@ -58,18 +59,27 @@ from FareBeep.config import (ADMIN_TOKEN, APP_BASE_URL, CONSENT_VERSION,
 from FareBeep.database import SessionLocal, init_db
 from FareBeep.iata import city_name, resolve_iata
 from FareBeep.models import (BookingSession, ChatState, DeliveryReceipt,
-                             ProcessedMessage, Subscription, User, utcnow)
+                             FareLedger, ProcessedMessage, Subscription,
+                             User, utcnow)
 from FareBeep.notifier import MetaWhatsapp, get_notifier
 from FareBeep.payments import verify_paystack_signature
 from FareBeep.search import LedgerOnlyEngine, LedgerSearch
-from FareBeep.travels247 import (Travels247Client, Travels247Error,
-                                     pick_cheapest)
+from FareBeep.suppliers import get_inventory_client, pick_cheapest
+from FareBeep.travels247 import Travels247Error  # supplier error shape (shared contract)
 from FareBeep.transactions import BookingService, PaystackError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("farebeep.main")
 
-app = FastAPI(title="FareBeep - Transactional Utility")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan: run the startup sequence (schema init, connection
+    check, orphaned-inbound recovery) on boot. No shutdown work needed."""
+    _startup()
+    yield
+
+
+app = FastAPI(title="FareBeep - Transactional Utility", lifespan=lifespan)
 
 # WhatsApp Flows data-exchange endpoint (the "Set a beep" screens).
 from FareBeep.whatsapp.flows import router as flows_router  # noqa: E402
@@ -89,7 +99,6 @@ _agent_stats = {"groq_ok": 0, "groq_fail": 0, "guided_turns": 0}
 # pending follow-up question are read/written there on every turn.
 
 
-@app.on_event("startup")
 def _startup():
     """Create the schema on first run (safe in both SQLite + Supabase modes)
     then verify the connection - prints the mission banner:
@@ -1465,6 +1474,32 @@ def _note_agent_outcome(phone: str, ok: bool) -> None:
         logger.warning("auto support-open after agent failures failed: %s", e)
 
 
+def _ops_ledger(db) -> dict:
+    """Ledger warmth for ops: coverage vs the warmer's route list and
+    freshness. The flow's review screen answers from these rows, so a
+    cold ledger literally shows users 'No cached fare yet'."""
+    from FareBeep.warmer import WARM_ROUTES
+    from datetime import timedelta
+    try:
+        total = db.query(FareLedger).count()
+        fresh = db.query(FareLedger).filter(
+            FareLedger.last_updated >= utcnow() - timedelta(hours=26)
+        ).count()
+        warmed_pairs = {(o, d) for o, d in WARM_ROUTES}
+        covered = 0
+        for o, d in db.query(FareLedger.origin, FareLedger.destination
+                             ).distinct().all():
+            if (str(o).upper(), str(d).upper()) in warmed_pairs:
+                covered += 1
+        newest = db.query(func.max(FareLedger.last_updated)).scalar()
+        return {"rows": total, "fresh_24h": fresh,
+                "warm_routes_covered": f"{covered}/{len(warmed_pairs)}",
+                "newest_fare_at": newest.isoformat() if newest else None}
+    except Exception as e:
+        logger.warning("Ops ledger stats failed: %s", e)
+        return {"rows": None, "error": str(e)[:120]}
+
+
 def _ops_support_rows(db) -> list:
     """Open/stale threads for the ops cockpit: identity, trigger, and the
     transcript tail so the human can read context before replying.
@@ -2728,6 +2763,7 @@ def admin_ops(request: Request):
             },
             "bookings": {str(getattr(k, "value", k)): v for k, v in bookings},
             "support": {"open_threads": _ops_support_rows(db)},
+            "ledger": _ops_ledger(db),
             "agent_this_process": dict(_agent_stats),
         }
     finally:
@@ -2768,6 +2804,30 @@ def admin_replay_dead_letter(message_id: str, request: Request):
                                      "reason": str(e)[:300]})
     finally:
         db.close()
+
+
+@app.post("/admin/ops/ledger/warm-now")
+def admin_warm_ledger_now(request: Request):
+    """Trigger a ledger warm cycle immediately (bypasses the 15-minute
+    interval gate - the worker's scheduled cycle still runs as usual).
+    Synchronous like replay: the caller sees the real counts. 247travels
+    login failure surfaces as warmed=0 + error, not a 500."""
+    if not _admin_ok(request):
+        return Response(status_code=404)
+    import FareBeep.warmer as warmer
+    try:
+        stats = warmer.warm_ledger()
+        if stats.get("skipped_test_mode"):
+            return JSONResponse({"ok": False,
+                                 "reason": "TRAVELS247_MODE=test: demo "
+                                 "credentials must not cache fares",
+                                 **stats}, status_code=409)
+        stats["ok"] = stats.get("errors", 0) < stats.get("routes", 1) * len(stats.get("dates", []))
+        return stats
+    except Exception as e:
+        logger.exception("Warm-now failed")
+        return JSONResponse({"ok": False, "error": str(e)[:300]},
+                            status_code=500)
 
 
 # ---------------------------------------------------------------------------
@@ -2889,7 +2949,7 @@ async def tools_search(request: Request):
                         origin, destination, flight_date, caller)
             return _tool_fare_summary(hit, "ledger", origin, destination,
                                       flight_date)
-        sky = Travels247Client()
+        sky = get_inventory_client()
         try:
             offers = await sky.search_offers(origin, destination,
                                              flight_date, adults=adults)
@@ -2942,7 +3002,7 @@ async def tools_reserve(request: Request):
     db = SessionLocal()
     try:
         user = _get_or_create_user(db, phone)
-        sky = Travels247Client()
+        sky = get_inventory_client()
         try:
             if body.get("booking_token"):
                 origin = resolve_iata(body.get("origin") or "")
@@ -3040,7 +3100,7 @@ async def _maybe_issue_247travels_ticket(session,
         logger.info("Travels247 ticketing skipped for %s (no token/travellers)",
                     session.payment_ref)
         return fallback_pnr, pending_note, provisional
-    sky = Travels247Client()
+    sky = get_inventory_client()
     try:
         pax = details.get("passengers") or {}
         priced = await sky.verify_price(

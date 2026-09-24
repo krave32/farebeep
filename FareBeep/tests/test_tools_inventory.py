@@ -96,7 +96,7 @@ def _seed_ledger(db):
 def test_tools_search_serves_ledger_hit(client, db, monkeypatch):
     _seed_ledger(db)
     fake = FakeTravels247(offers=[])
-    monkeypatch.setattr(main, "Travels247Client", lambda *a, **k: fake)
+    monkeypatch.setattr(main, "get_inventory_client", lambda *a, **k: fake)
 
     r = client.post("/tools/search",
                     json={"origin": "Lagos", "destination": "Abuja",
@@ -114,7 +114,7 @@ def test_tools_search_serves_ledger_hit(client, db, monkeypatch):
 def test_tools_search_get_method_serves_ledger_hit(client, db,
                                                       monkeypatch):
     _seed_ledger(db)
-    monkeypatch.setattr(main, "Travels247Client",
+    monkeypatch.setattr(main, "get_inventory_client",
                         lambda *a, **k: FakeTravels247(offers=[]))
 
     r = client.get("/tools/search",
@@ -128,7 +128,7 @@ def test_tools_search_get_method_serves_ledger_hit(client, db,
 def test_tools_search_miss_queries_247travels_and_upserts(
         client, db, monkeypatch):
     fake = FakeTravels247()
-    monkeypatch.setattr(main, "Travels247Client", lambda *a, **k: fake)
+    monkeypatch.setattr(main, "get_inventory_client", lambda *a, **k: fake)
 
     r = client.post("/tools/search",
                     json={"origin": "LOS", "destination": "ABV",
@@ -147,7 +147,7 @@ def test_tools_search_miss_queries_247travels_and_upserts(
 
 
 def test_tools_search_no_live_offers(client, monkeypatch):
-    monkeypatch.setattr(main, "Travels247Client",
+    monkeypatch.setattr(main, "get_inventory_client",
                         lambda *a, **k: FakeTravels247(offers=[]))
 
     r = client.post("/tools/search",
@@ -174,7 +174,7 @@ def test_tools_search_rejects_bad_secret(client, monkeypatch):
 
 def test_tools_search_accepts_good_secret(client, db, monkeypatch):
     monkeypatch.setattr(main, "ELEVENLABS_TOOL_SECRET", "s3cr3t")
-    monkeypatch.setattr(main, "Travels247Client",
+    monkeypatch.setattr(main, "get_inventory_client",
                         lambda *a, **k: FakeTravels247(offers=[]))
     _seed_ledger(db)
 
@@ -208,7 +208,7 @@ def test_tools_search_rejects_bad_input(client):
 
 def test_tools_reserve_with_token_locks_and_links(client, db, monkeypatch):
     fake = FakeTravels247()
-    monkeypatch.setattr(main, "Travels247Client", lambda *a, **k: fake)
+    monkeypatch.setattr(main, "get_inventory_client", lambda *a, **k: fake)
 
     r = client.post("/tools/reserve",
                     json={"phone": "+2348012345678",
@@ -242,7 +242,7 @@ def test_tools_reserve_accepts_string_passengers_and_travellers(
     """ElevenLabs declares objects as type string - JSON text must parse,
     not 500 (and string travellers must not poison the PNR step)."""
     fake = FakeTravels247()
-    monkeypatch.setattr(main, "Travels247Client", lambda *a, **k: fake)
+    monkeypatch.setattr(main, "get_inventory_client", lambda *a, **k: fake)
 
     r = client.post("/tools/reserve",
                     json={"phone": "+2348012345678",
@@ -265,7 +265,7 @@ def test_tools_reserve_accepts_string_passengers_and_travellers(
 
 def test_tools_reserve_without_token_searches_first(client, monkeypatch):
     fake = FakeTravels247()
-    monkeypatch.setattr(main, "Travels247Client", lambda *a, **k: fake)
+    monkeypatch.setattr(main, "get_inventory_client", lambda *a, **k: fake)
 
     r = client.post("/tools/reserve",
                     json={"phone": "+2348012345678",
@@ -283,7 +283,7 @@ def test_tools_reserve_247travels_down_returns_502(client, monkeypatch):
         async def verify_price(self, *a, **k):
             raise Travels247Error("supplier 502")
 
-    monkeypatch.setattr(main, "Travels247Client", lambda *a, **k: _Down())
+    monkeypatch.setattr(main, "get_inventory_client", lambda *a, **k: _Down())
 
     r = client.post("/tools/reserve",
                     json={"phone": "+2348012345678",
@@ -331,7 +331,7 @@ def test_paystack_webhook_issues_real_pnr(client, db,
     """Paid + Travels247 creds + stored token/travellers -> real PNR in the beep."""
     monkeypatch.setattr(main, "TRAVELS247_EMAIL", "p@x.com")
     monkeypatch.setattr(main, "TRAVELS247_PASSWORD", "pw")
-    monkeypatch.setattr(main, "Travels247Client",
+    monkeypatch.setattr(main, "get_inventory_client",
                         lambda *a, **k: FakeTravels247(pnr="ABC123"))
     sent = []
     monkeypatch.setattr(main.notifier, "send_text",

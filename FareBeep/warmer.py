@@ -4,7 +4,8 @@ The ledger only learns when a human asks; unwatched routes go stale and
 every question costs a live call. The warmer re-searches the busiest
 routes on a timer and upserts the cheapest sane fare per route+date.
 
-247travels ONLY (single-source decision): no SerpApi, no scraping here.
+The configured INVENTORY supplier only (suppliers.py): no SerpApi, no
+scraping here.
 Surge prices are skipped, never cached; no 90s anomaly hold on this
 path (browse-speed - the BOOK handshake re-verifies before money).
 
@@ -19,17 +20,29 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger("farebeep.warmer")
 
-# Busiest corridors first (FAAN 2025 + MMA2 ops data), then Kano/Enugu.
-# Directed both ways: returns matter as much as outbound legs.
+# Busiest corridors first (FAAN 2025 + MMA2 ops data), then secondary
+# cities. Every code here is selectable in the WhatsApp flow's dropdowns
+# (flow_screens.json), so warmed routes are exactly the ones users can
+# set beeps for. Directed both ways: returns matter as much as outbound.
 WARM_ROUTES = [
     ("LOS", "ABV"), ("ABV", "LOS"),
     ("LOS", "PHC"), ("PHC", "LOS"),
     ("ABV", "PHC"), ("PHC", "ABV"),
-    ("LOS", "ABB"), ("ABB", "LOS"),
-    ("LOS", "KAN"), ("KAN", "LOS"),
     ("LOS", "ENU"), ("ENU", "LOS"),
+    ("ABV", "ENU"), ("ENU", "ABV"),
+    ("LOS", "KAN"), ("KAN", "LOS"),
+    ("ABV", "KAN"), ("KAN", "ABV"),
+    ("LOS", "BNI"), ("BNI", "LOS"),
+    ("LOS", "CBQ"), ("CBQ", "LOS"),
+    ("ABV", "CBQ"), ("CBQ", "ABV"),
+    ("LOS", "ABB"), ("ABB", "LOS"),
+    ("ABV", "IBA"), ("IBA", "ABV"),
 ]
-WARM_DAYS_AHEAD = (1, 3, 7)
+WARM_DAYS_AHEAD = (1, 2, 3, 5, 7)
+
+# Secondary-city kickstand: these thin corridors warm only when there are
+# subscriber beeps on them (warm_ledger merges them in automatically).
+WARM_DAYS_AHEAD_THIN = (1, 3, 7)
 
 # Process-local gate: the worker calls run_warmer_if_due() every cycle,
 # the actual warm run happens at most once per interval.
@@ -90,17 +103,29 @@ async def _warm_once(client, ledger, jobs) -> dict:
 
 
 def warm_ledger(db=None, routes=None, days_ahead=None, client=None,
-                clock=None) -> dict:
+                clock=None, allow_test_mode: bool = False) -> dict:
     """Refresh fares for routes x days. Returns counts; never raises.
 
     A single asyncio.run covers the whole batch (one event loop for all
     searches AND the client close - see agent.py _search_and_close for
     why two loops crash).
+
+    Test-credential guard: TRAVELS247_MODE=test (demo credentials) never
+    touches the Shared Ledger - the cache feeds real beeps, so demo
+    prices would arm fake alerts. Callers must pass
+    allow_test_mode=True (tests do) to override deliberately.
     """
+    from FareBeep.config import TRAVELS247_MODE
+    if TRAVELS247_MODE == "test" and not allow_test_mode and client is None:
+        logger.warning("Warmer skipped: TRAVELS247_MODE=test (demo "
+                       "credentials must not cache fares into the ledger)")
+        return {"routes": 0, "dates": [], "upserted": 0,
+                "skipped_surge": 0, "misses": 0, "errors": 0,
+                "skipped_test_mode": True}
     from FareBeep.database import SessionLocal
     from FareBeep.models import utcnow
     from FareBeep.search import LedgerOnlyEngine, LedgerSearch
-    from FareBeep.travels247 import Travels247Client
+    from FareBeep.suppliers import get_inventory_client
 
     own_db = db is None
     db = db or SessionLocal()
@@ -108,15 +133,25 @@ def warm_ledger(db=None, routes=None, days_ahead=None, client=None,
     today = now.date() if isinstance(now, datetime) else now
     days = tuple(days_ahead) if days_ahead else WARM_DAYS_AHEAD
     wanted = list(routes) if routes else list(WARM_ROUTES)
+    thin = []
     for sub in _subscriber_routes(db):
+        # A subscriber route already in WARM_ROUTES rides the full window;
+        # otherwise it joins as a thin route with its own lighter window.
         if sub not in wanted:
             wanted.append(sub)
+            thin.append(sub)
     dates = [(today + timedelta(days=n)).strftime("%Y-%m-%d") for n in days]
-    jobs = [(o, d, dt) for o, d in wanted for dt in dates]
+    thin_dates = [(today + timedelta(days=n)).strftime("%Y-%m-%d")
+                  for n in WARM_DAYS_AHEAD_THIN]
+    core = [(o, d, dt) for o, d in wanted if (o, d) not in thin
+            for dt in dates]
+    # Subscriber-only corridors get the lighter window: nobody browses
+    # them cold, so 3 dates keep baselines fresh at a fraction of the cost.
+    jobs = core + [(o, d, dt) for o, d in thin for dt in thin_dates]
 
     ledger = LedgerSearch(db, live=LedgerOnlyEngine())
     own_client = client is None
-    client = client or Travels247Client()
+    client = client or get_inventory_client()
     stats = {"routes": len(wanted), "dates": list(dates), "upserted": 0,
              "skipped_surge": 0, "misses": 0, "errors": 0}
 
