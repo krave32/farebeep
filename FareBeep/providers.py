@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
-from FareBeep.config import (HTTP_MAX_RETRIES, HTTP_TIMEOUT,
+from FareBeep.config import (HTTP_MAX_RETRIES, HTTP_TIMEOUT, SLEEP_SCALE,
                              FARE_PROVIDER, TIQWA_API_KEY, TIQWA_BASE_URL,
                              TIQWA_ENV)
 
@@ -87,7 +87,8 @@ class RetryClient:
                     raise ProviderError(
                         f"{method} {url} failed after {attempt} attempts: "
                         f"{e} (rid={request_id})") from e
-                delay = min(0.5 * (2 ** (attempt - 1)), 8.0) + random.uniform(0, 0.25)
+                delay = SLEEP_SCALE * min(0.5 * (2 ** (attempt - 1)), 8.0) \
+                    + SLEEP_SCALE * random.uniform(0, 0.25)
             except ProviderError:
                 raise
             logger.warning("%s %s retry %d/%d after %.2fs (rid=%s)",
@@ -102,7 +103,8 @@ class RetryClient:
                 return min(float(retry_after), 10.0)
             except ValueError:
                 pass
-        return min(0.5 * (2 ** (attempt - 1)), 8.0) + random.uniform(0, 0.25)
+        return SLEEP_SCALE * min(0.5 * (2 ** (attempt - 1)), 8.0) \
+            + SLEEP_SCALE * random.uniform(0, 0.25)
 
 
 # ---------------------------------------------------------------------------

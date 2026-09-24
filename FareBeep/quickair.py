@@ -21,7 +21,7 @@ from typing import Any, Optional
 import httpx
 
 from FareBeep.config import (QUICKAIR_BASE_URL, QUICKAIR_EMAIL,
-                             QUICKAIR_PASSWORD)
+                             QUICKAIR_PASSWORD, SLEEP_SCALE)
 
 logger = logging.getLogger("farebeep.quickair")
 
@@ -172,10 +172,11 @@ class QuickAirClient:
             retry_after = resp.headers.get("retry-after")
             try:
                 if retry_after is not None:
-                    return min(float(retry_after), 30.0)
+                    return SLEEP_SCALE * min(float(retry_after), 30.0)
             except ValueError:
                 pass
-        return min(0.5 * (2 ** (attempt - 1)), 8.0) + random.uniform(0, 0.25)
+        return SLEEP_SCALE * min(0.5 * (2 ** (attempt - 1)), 8.0) \
+            + SLEEP_SCALE * random.uniform(0, 0.25)
 
     # -- auth ---------------------------------------------------------------
     async def _access_token(self) -> str:

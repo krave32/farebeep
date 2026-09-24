@@ -64,6 +64,11 @@ TELEGRAM_WEBHOOK_SECRET = _get("TELEGRAM_WEBHOOK_SECRET")
 # Telegram itself is the transport: no public URL, no cloudflared.
 TELEGRAM_POLL_TIMEOUT = int(_get("TELEGRAM_POLL_TIMEOUT", "25"))
 
+# Multiplier applied to every deliberate backoff/reattempt sleep (retry
+# backoff, anomaly re-check). 1.0 = production timing; tests set it to 0
+# (see conftest.py) so retry loops keep their semantics without real waits.
+SLEEP_SCALE = float(_get("SLEEP_SCALE", "1.0"))
+
 # --- Gemini ---
 GEMINI_API_KEY = _get("GEMINI_API_KEY")
 # GEMINI_MODEL default: "gemini-1.5-flash" is retired (404, confirmed live), and

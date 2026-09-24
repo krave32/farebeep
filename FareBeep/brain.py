@@ -22,7 +22,7 @@ from typing import Optional
 
 import httpx
 
-from FareBeep.config import GEMINI_API_KEY, GEMINI_MODEL
+from FareBeep.config import GEMINI_API_KEY, GEMINI_MODEL, SLEEP_SCALE
 from FareBeep.iata import CITY_TO_IATA, resolve_iata
 
 logger = logging.getLogger("farebeep.brain")
@@ -214,7 +214,7 @@ def parse_intent(text: str, api_key: str = None, model: str = None,
                 break
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429 and attempt < 2:
-                    time.sleep(2.0 * (attempt + 1))   # rate-limit: back off, retry
+                    time.sleep(SLEEP_SCALE * 2.0 * (attempt + 1))   # rate-limit: back off, retry
                     continue
                 logger.warning("Gemini intent parse failed (%s) - local parser", e)
                 content = None
@@ -562,7 +562,7 @@ def compose_reply(template: str, user_name: str = None, api_key: str = None,
                 return text or _warm_fallback(template, greeting)
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429 and attempt < 2:
-                    time.sleep(2.0 * (attempt + 1))   # rate-limit: back off, retry
+                    time.sleep(SLEEP_SCALE * 2.0 * (attempt + 1))   # rate-limit: back off, retry
                     continue
                 logger.warning("Gemini reply compose failed: %s", e)
                 return _warm_fallback(template, greeting)
@@ -748,7 +748,7 @@ def resolve_pick(text: str, fares: list, api_key: str = None,
                 break
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429 and attempt < 2:
-                    time.sleep(2.0 * (attempt + 1))   # rate-limit: back off, retry
+                    time.sleep(SLEEP_SCALE * 2.0 * (attempt + 1))   # rate-limit: back off, retry
                     continue
                 logger.warning("Gemini pick resolve failed (%s) - local", e)
                 break
@@ -861,7 +861,7 @@ def compose_ranked_reply(fares: list, origin: str, destination: str,
                 return text or _warm_fallback(template, greeting)
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429 and attempt < 2:
-                    time.sleep(2.0 * (attempt + 1))   # rate-limit: back off, retry
+                    time.sleep(SLEEP_SCALE * 2.0 * (attempt + 1))   # rate-limit: back off, retry
                     continue
                 logger.warning("Gemini ranked reply failed: %s", e)
                 return _warm_fallback(template, greeting)
@@ -936,7 +936,7 @@ def compose_unclear_pick_reply(text: str, fares: list, user_name: str = None,
                 return text or _warm_fallback(template, greeting)
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429 and attempt < 2:
-                    time.sleep(2.0 * (attempt + 1))   # rate-limit: back off, retry
+                    time.sleep(SLEEP_SCALE * 2.0 * (attempt + 1))   # rate-limit: back off, retry
                     continue
                 logger.warning("Gemini unclear-pick reply failed: %s", e)
                 return _warm_fallback(template, greeting)

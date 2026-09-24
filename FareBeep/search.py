@@ -34,7 +34,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from FareBeep.config import (FARE_PRICE_GUARDRAIL_NGN, FX_RATE_NGN_PER_USD,
-                             FX_RATE_TTL_HOURS, FX_SAFETY_MARGIN,
+                             FX_RATE_TTL_HOURS, FX_SAFETY_MARGIN, SLEEP_SCALE,
                              SERPAPI_API_KEY, SERPAPI_CURRENCY, SERPAPI_ENGINE,
                              SERPAPI_GL_REGION)
 from FareBeep.iata import resolve_iata
@@ -184,7 +184,7 @@ def get_adaptive_ttl(db, origin: str, destination: str,
 # Low-price anomaly verification - the ledger's OTHER sanity filter
 # ---------------------------------------------------------------------------
 ANOMALY_DROP_THRESHOLD = 0.20       # >20% below the previous row -> suspicious
-ANOMALY_RECHECK_WAIT_SECONDS = 90   # settle time before the confirm call
+ANOMALY_RECHECK_WAIT_SECONDS = SLEEP_SCALE * 90   # settle time before the confirm call
 CONFIRMATION_TOLERANCE = 0.05       # second call within 5% -> the price is real
 
 # ---------------------------------------------------------------------------
