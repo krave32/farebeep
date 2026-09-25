@@ -1937,6 +1937,14 @@ def _try_booking_answer(db, user: User, text: str) -> bool:
         return True
 
     if _booking_name_ok(text):
+        # The agent can arm this gate conversationally, so a fresh route
+        # request ("Lagos to Abuja tomorrow") must NOT become a passenger
+        # name - it falls through to the normal search gates instead.
+        if brain.single_city(text) is not None or brain.has_date(text):
+            chatstate.clear_pending_booking(db, user.phone)
+            logger.info("Booking gate dropped (looks like a new route): %r",
+                        text[:40])
+            return False
         parts = text.split()
         travellers = {"first_name": parts[0],
                       "last_name": " ".join(parts[1:]) or parts[0],

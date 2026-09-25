@@ -382,7 +382,8 @@ def build_tools(db: Session, phone: str) -> list:
         chatstate.set_last_fare(db, phone, {
             "origin_iata": o, "destination_iata": d,
             "flight_date": date, "price": best["price"],
-            "airline": best["airline_name"]})
+            "airline": best["airline_name"],
+            "booking_token": best.get("booking_token")})
         return json.dumps({
             "found": True, "source": "247travels",
             "summary": (f"{best['airline_name']} {best.get('flight_no') or ''}, "
@@ -678,8 +679,38 @@ def agent_reply(db: Session, user, text: str, llm=None,
         # Every round died in a backend error (never the user's fault):
         # say that, don't blame their message.
         reply = TROUBLE
+    arm_booking_if_asking_name(db, user.phone, reply)
     chatstate.append_agent_history(db, user.phone, text, reply)
     return reply
+
+
+def arm_booking_if_asking_name(db: Session, phone: str, reply: str) -> bool:
+    """Bridge the agent's conversational name question to the DETERMINISTIC
+    booking gate (main._try_booking_answer).
+
+    When the agent asks for the passenger's full name, the NEXT reply
+    must book - even if Groq is down by then (the live smoke caught a
+    user's name swallowed by a Groq outage and answered with help text).
+    Arms pending_booking from the last search context so the gate owns
+    the turn. Returns True when armed."""
+    low = (reply or "").lower()
+    if not ("full name" in low and "passenger" in low):
+        return False
+    ctx = chatstate.get_last_fare(db, phone) or {}
+    if not (ctx.get("origin_iata") and ctx.get("destination_iata")
+            and ctx.get("flight_date") and ctx.get("price")):
+        return False
+    chatstate.set_pending_booking(db, phone, {
+        "origin_iata": ctx["origin_iata"],
+        "destination_iata": ctx["destination_iata"],
+        "flight_date": ctx["flight_date"],
+        "price": ctx["price"],
+        "airline": ctx.get("airline"),
+        "booking_token": ctx.get("booking_token"),
+        "stage": "name",
+        "armed_at": utcnow().isoformat(),
+    })
+    return True
 
 
 __all__ = ["agent_reply", "build_tools", "SYSTEM_PROMPT", "FALLBACK"]
