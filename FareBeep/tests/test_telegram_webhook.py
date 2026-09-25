@@ -164,6 +164,14 @@ def test_telegram_send_template_degrades_to_text(monkeypatch):
 
 
 def test_telegram_send_text_without_token_is_safe(monkeypatch):
+    """No token configured -> message is dropped, False, NO network call.
+
+    HERMETICITY NOTE: the constructor does `token or TELEGRAM_BOT_TOKEN`,
+    so a bare TelegramBot(token=None) picks up the real .env token -
+    these tests monkeypatch the module constant to None, otherwise they
+    silently dial api.telegram.org (found by --durations: 10.7s)."""
+    import FareBeep.notifier as notifier_mod
+    monkeypatch.setattr(notifier_mod, "TELEGRAM_BOT_TOKEN", None)
     bot = TelegramBot(token=None)
     assert bot.send_text("987654321", "hello") is False
 
@@ -193,8 +201,21 @@ def test_telegram_send_action_posts_typing(monkeypatch):
 
 
 def test_telegram_send_action_without_token_is_safe(monkeypatch):
+    import FareBeep.notifier as notifier_mod
+    monkeypatch.setattr(notifier_mod, "TELEGRAM_BOT_TOKEN", None)
     bot = TelegramBot(token=None)
     assert bot.send_action("987654321") is False
+
+
+def test_telegram_card_methods_without_token_are_safe(monkeypatch):
+    """The card/Mini-App/callback transports share the same guard."""
+    import FareBeep.notifier as notifier_mod
+    monkeypatch.setattr(notifier_mod, "TELEGRAM_BOT_TOKEN", None)
+    bot = TelegramBot(token=None)
+    assert bot.send_interactive_card(
+        "987654321", "body", [("book", "Book")]) is False
+    assert bot.send_beep_app("987654321", "https://x.ng/mini/beep") is False
+    assert bot.answer_callback("cb1") is False
 
 
 def test_telegram_send_action_failure_never_raises(monkeypatch):

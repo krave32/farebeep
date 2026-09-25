@@ -61,6 +61,40 @@ def test_poll_once_offset_never_goes_backwards(monkeypatch):
     assert poller.poll_once(client, 9) == 12
 
 
+def test_poll_once_accepts_callback_query_updates(monkeypatch):
+    """Fare-card button taps ride the poller too: callback_query updates
+    route into main._telegram_callback (the SAME gates as the webhook)
+    and advance the offset."""
+    handled, callbacks = [], []
+    monkeypatch.setattr(poller, "_handle",
+                        lambda cid, text: handled.append((cid, text)))
+
+    import FareBeep.main as main_mod
+    monkeypatch.setattr(main_mod, "_telegram_callback",
+                        lambda cb_id, chat_id, data:
+                        callbacks.append((cb_id, chat_id, data)))
+
+    class _CbResp(_FakeResp):
+        def json(self):
+            return {"result": [
+                {"update_id": 30, "callback_query": {
+                    "id": "CB7", "data": "pick:2",
+                    "message": {"chat": {"id": 555}}}},
+                {"update_id": 31,
+                 "message": {"chat": {"id": 556}, "text": "hi"}}]}
+
+    class _Client(_FakeClient):
+        def get(self, url, params):
+            self.captured = (url, params)
+            return _CbResp()
+
+    client = _Client()
+    assert poller.poll_once(client, 0) == 32
+    assert callbacks == [("CB7", "555", "pick:2")]
+    assert handled == [("556", "hi")]              # text path unaffected
+    assert "callback_query" in client.captured[1]["allowed_updates"]
+
+
 def test_poller_handle_sends_typing_first(monkeypatch):
     """Typing indicator fires, then the message is handled - and a
     typing failure must never block the reply."""
