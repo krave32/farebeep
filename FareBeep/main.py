@@ -38,6 +38,7 @@ import re
 import threading
 import time
 import uuid
+from typing import Optional
 
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -52,7 +53,8 @@ from FareBeep import brain, cards, chatstate
 from FareBeep.config import (ADMIN_TOKEN, APP_BASE_URL, CONSENT_VERSION,
                              MESSAGING_PROVIDER, META_APP_SECRET,
                              META_VERIFY_TOKEN, RATE_LIMIT_PER_MIN,
-                             REQUOTE_TOLERANCE_NGN, TRAVELS247_EMAIL,
+                             REQUOTE_TOLERANCE_NGN, TELEGRAM_BOT_TOKEN,
+                             TRAVELS247_EMAIL,
                              TRAVELS247_PASSWORD, ELEVENLABS_TOOL_SECRET,
                              GROQ_API_KEY, GUIDED_MODE,
                              SUPPORT_TICKET_TTL_HOURS)
@@ -683,8 +685,15 @@ def _send_beep_flow(phone: str) -> None:
     BEEP_FLOW_ID - or on a non-Meta channel - degrade to the guided
     TRACK path so the button never dead-ends."""
     if MESSAGING_PROVIDER.lower() == "telegram":
-        # The Meta-hosted Flow cannot open in a Telegram chat - go
-        # straight to the guided TRACK path (no futile Meta API call).
+        # The Meta-hosted Flow cannot open in a Telegram chat - the
+        # Mini App is its equivalent: the beep form opens embedded in
+        # the chat (needs a public https origin). Without one, the
+        # guided TRACK path keeps the button from dead-ending.
+        if APP_BASE_URL.startswith("https://"):
+            sent = notifier.send_beep_app(
+                phone, f"{APP_BASE_URL}/mini/beep")
+            if sent:
+                return
         _handle_incoming_message(phone, "TRACK")
         return
     try:
@@ -2864,6 +2873,98 @@ def _telegram_typing(chat_id: str) -> None:
 @app.get("/webhook/telegram")
 async def telegram_verify(request: Request):
     return PlainTextResponse("FareBeep Telegram webhook is live")
+
+
+# ---------------------------------------------------------------------------
+# Telegram Mini App - the "Set a beep" form (the WhatsApp-Flow equivalent)
+# ---------------------------------------------------------------------------
+def _verify_telegram_init_data(init_data: str) -> Optional[str]:
+    """Validate Telegram WebApp initData and return the chat_id (str).
+
+    Telegram signs the payload with HMAC-SHA256 whose key is
+    HMAC-SHA256(key='WebAppData', msg=<bot token>); the signed material
+    is every field EXCEPT hash itself, joined by newlines, sorted.
+    Returns None on any failure - an unverified page call never touches
+    the ledger.
+    """
+    import hashlib
+    if not init_data:
+        return None
+    try:
+        from urllib.parse import parse_qsl, quote
+        # parse_qsl URL-decodes values; Telegram signs the ENCODED wire
+        # form, so rebuild the check string field by field with quote().
+        pairs_list = parse_qsl(init_data, keep_blank_values=True)
+        pairs = dict(pairs_list)
+        received = pairs.get("hash", "")
+        if not received:
+            return None
+        check = "\n".join(
+            f"{k}={quote(str(v), safe='')}" for k, v in sorted(
+                (k, v) for k, v in pairs_list if k != "hash"))
+        # The WebApp scheme (NOT the login-widget SHA256): the HMAC key
+        # itself derives from the bot token keyed by 'WebAppData'.
+        secret = hmac.new(b"WebAppData", (TELEGRAM_BOT_TOKEN or "").encode(),
+                          hashlib.sha256).digest()
+        calc = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(calc, received):
+            logger.warning("Mini App initData REJECTED (bad hash)")
+            return None
+        user = json.loads(pairs.get("user") or "{}")
+        chat_id = str(user.get("id") or "")
+        return chat_id or None
+    except Exception as e:
+        logger.warning("Mini App initData parse failed: %s", e)
+        return None
+
+
+@app.get("/mini/beep")
+async def mini_beep_page():
+    """The Telegram Mini App form (the 'Set a beep' equivalent of the
+    WhatsApp Flow). Served as a file; identity arrives signed in initData."""
+    return FileResponse(os.path.join(WEB_DIR, "mini-beep.html"))
+
+
+@app.post("/mini/beep/submit")
+async def mini_beep_submit(request: Request):
+    """Mini App form completion -> the SAME SubscriptionMonitor.subscribe
+    the WhatsApp Flow completion uses (idempotent per user+route).
+    Identity comes ONLY from verified initData - never from the body."""
+    body = await request.json()
+    chat_id = _verify_telegram_init_data(str(body.get("initData") or ""))
+    if not chat_id:
+        return JSONResponse(status_code=401, content={
+            "ok": False, "error": "Could not verify this Telegram session - "
+                                  "reopen the form from the chat."})
+    origin = resolve_iata(str(body.get("origin") or ""))
+    destination = resolve_iata(str(body.get("destination") or ""))
+    if not origin or not destination or origin == destination:
+        return JSONResponse(status_code=422, content={
+            "ok": False, "error": "Pick two different cities."})
+    target = _flow_target_price(body)
+    if target is None and not body.get("dropwatch"):
+        return JSONResponse(status_code=422, content={
+            "ok": False, "error": "Give a target price or keep drop-watch on."})
+    db = SessionLocal()
+    try:
+        user = _get_or_create_user(db, chat_id)
+        from FareBeep.alerts import SubscriptionMonitor, target_realism_note
+        SubscriptionMonitor(db).subscribe(
+            user.user_id, origin, destination,
+            target_price=target,
+            target_date=str(body.get("departure_date") or "") or None)
+        date_label = str(body.get("departure_date") or "the coming weeks")
+        summary = (f"Watching {city_name(origin)} -> "
+                   f"{city_name(destination)} ({date_label}) - beep at "
+                   f"NGN {target:,.0f} or lower." if target else
+                   f"Watching {city_name(origin)} -> "
+                   f"{city_name(destination)} ({date_label}) - beep on any "
+                   f"genuine drop.")
+        return {"ok": True, "summary": summary,
+                "realism_warning": target_realism_note(db, origin,
+                                                       destination, target)}
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------

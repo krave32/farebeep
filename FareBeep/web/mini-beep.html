@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>FareBeep · Set a beep</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:#17210b; --card:#1f2b10; --card2:#253315;
+    --lime:#b0c572; --olive:#697738; --muted:#a7b489; --white:#eef3e2;
+    --err:#e0806b; --ok:#9fca7d;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  body{
+    margin:0; padding:16px 16px 32px; background:var(--bg); color:var(--white);
+    font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    min-height:100vh;
+  }
+  .wrap{max-width:420px; margin:0 auto;}
+  .brand{display:flex; align-items:center; gap:10px; margin-bottom:18px;}
+  .brand .dot{width:34px;height:34px;border-radius:50%;
+    background:radial-gradient(circle at 32% 32%, #2a3814, #1a240d);
+    border:1.5px solid var(--olive); display:flex;align-items:center;justify-content:center;}
+  .brand .dot svg{width:20px;height:20px;}
+  .brand b{font-size:18px; letter-spacing:.2px;}
+  .brand b em{font-style:italic; color:var(--lime); font-family:Georgia,serif;}
+  .brand span{color:var(--muted); font-size:11px; display:block; margin-top:2px;
+    letter-spacing:2.5px; text-transform:uppercase;}
+  h1{font-size:20px; margin:6px 0 4px;}
+  .sub{color:var(--muted); font-size:13px; line-height:1.45; margin:0 0 18px;}
+  label{display:block; font-size:12px; color:var(--muted);
+    text-transform:uppercase; letter-spacing:1.5px; margin:14px 0 6px;}
+  select,input[type=date],input[type=number]{
+    width:100%; padding:13px 12px; border-radius:12px; border:1.5px solid var(--olive);
+    background:var(--card); color:var(--white); font-size:16px; outline:none;
+    -webkit-appearance:none; appearance:none;}
+  select:focus,input:focus{border-color:var(--lime);}
+  input[type=number]::placeholder{color:#5d6b3e;}
+  .row{display:flex; gap:10px;}
+  .row>div{flex:1;}
+  .swap{align-self:flex-end; margin:0 0 10px; width:42px; height:42px; border-radius:50%;
+    border:1.5px solid var(--olive); background:var(--card2); color:var(--lime);
+    font-size:17px; flex:0 0 42px;}
+  .hint{font-size:12px; color:var(--muted); margin:8px 2px 0;}
+  .dropwatch{display:flex; gap:10px; align-items:center; margin-top:14px;
+    background:var(--card); border:1.5px solid var(--olive); border-radius:12px;
+    padding:12px;}
+  .dropwatch input{width:20px;height:20px; accent-color:var(--lime);}
+  .dropwatch label{margin:0; text-transform:none; letter-spacing:0;
+    font-size:14px; color:var(--white); display:block;}
+  .dropwatch small{display:block; color:var(--muted); font-size:12px; margin-top:2px;}
+  .cta{width:100%; margin-top:22px; padding:15px; border:none; border-radius:14px;
+    background:var(--lime); color:#1a240d; font-size:16px; font-weight:700;
+    letter-spacing:.3px;}
+  .cta:disabled{opacity:.55;}
+  .msg{display:none; margin-top:16px; padding:13px; border-radius:12px;
+    font-size:14px; line-height:1.5;}
+  .msg.ok{display:block; background:var(--card2); border:1.5px solid var(--ok); color:var(--ok);}
+  .msg.err{display:block; background:var(--card2); border:1.5px solid var(--err); color:var(--err);}
+  .foot{margin-top:20px; text-align:center; color:#5d6b3e; font-size:11px;
+    letter-spacing:2px; text-transform:uppercase;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <div class="dot">
+      <svg viewBox="0 0 100 100" fill="none">
+        <path d="M 16 52 A 26 26 0 1 0 74 40" stroke="#b0c572" stroke-width="7" stroke-linecap="round"/>
+        <path d="M 30 52 A 13 13 0 1 0 56 46" stroke="#b0c572" stroke-width="6" stroke-linecap="round"/>
+        <line x1="32" y1="72" x2="72" y2="32" stroke="#b0c572" stroke-width="5" stroke-linecap="round"/>
+        <circle cx="79" cy="26" r="8" fill="#b0c572"/>
+        <path d="M 38 50 L 58 44 L 48 56 L 46 52 Z" fill="#eef3e2"/>
+      </svg>
+    </div>
+    <div><b><em>Fare</em>Beep</b><span>Price radar</span></div>
+  </div>
+
+  <h1>Set a beep 🎯</h1>
+  <p class="sub">Pick a route and we'll watch the fares — you get a Telegram
+     message the moment it drops (or hits your target).</p>
+
+  <form id="f">
+    <label>From</label>
+    <select id="origin" required></select>
+    <button type="button" class="swap" id="swap" title="Swap">⇅</button>
+    <label>To</label>
+    <select id="destination" required></select>
+
+    <label>Travel date <span style="text-transform:none;letter-spacing:0">(optional)</span></label>
+    <input type="date" id="date">
+
+    <div class="dropwatch">
+      <input type="checkbox" id="dw" checked>
+      <label for="dw">Any genuine drop<small>Beep when the fare falls meaningfully below its recent level</small></label>
+    </div>
+
+    <label>Or beep at a target (₦)</label>
+    <input type="number" id="target" inputmode="numeric" min="1000" step="100"
+           placeholder="e.g. 90000">
+
+    <button class="cta" id="go" type="submit">Arm the beep 🔔</button>
+    <div class="msg" id="msg"></div>
+  </form>
+
+  <div class="foot">FareBeep · verified just now</div>
+</div>
+
+<script>
+const IATA = [
+  ["Lagos","LOS"],["Abuja","ABV"],["Port Harcourt","PHC"],["Enugu","ENU"],
+  ["Benin City","BNI"],["Kano","KAN"],["Calabar","CBQ"],["Ilorin","ILR"],
+  ["Owerri","QOW"],["Asaba","ABB"],["Uyo","QUO"],["Sokoto","SKO"],
+  ["Yola","YOL"],["Maiduguri","MIU"],["Akure","AKR"],["Warri","QRW"],
+  ["Jos","JOS"],["Kaduna","KAD"],["Ibadan","IBA"],
+];
+const $ = id => document.getElementById(id);
+const sel = (id, def) => {
+  $(id).innerHTML = IATA.map(([n,c]) =>
+    `<option value="${c}" ${c===def?"selected":""}>${n}</option>`).join("");
+};
+sel("origin","LOS"); sel("destination","ABV");
+
+$("swap").onclick = () => {
+  const o=$("origin").value; $("origin").value=$("destination").value;
+  $("destination").value=o;
+};
+
+const tg = window.Telegram?.WebApp;
+if (tg) { tg.ready(); tg.expand(); tg.setHeaderColor("#17210b"); tg.setBackgroundColor("#17210b"); }
+
+$("f").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const msg = $("msg"); msg.className="msg"; msg.style.display="none";
+  const btn = $("go"); btn.disabled = true; btn.textContent = "Arming…";
+  const dropwatch = $("dw").checked && !$("target").value;
+  const body = {
+    initData: tg?.initData || "",
+    origin: $("origin").value,
+    destination: $("destination").value,
+    departure_date: $("date").value || "",
+    target_price: $("target").value || null,
+    dropwatch,
+  };
+  try {
+    const r = await fetch("/mini/beep/submit", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(body)});
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.error || "Could not arm the beep");
+    msg.className="msg ok";
+    msg.textContent = "✅ " + data.summary;
+    $("go").textContent = "Armed ✓";
+    if (tg) tg.HapticFeedback?.notificationOccurred("success");
+    setTimeout(() => tg?.close(), 1600);
+  } catch (err) {
+    msg.className="msg err";
+    msg.textContent = err.message || "Something went wrong - try again.";
+    btn.disabled = false; btn.textContent = "Arm the beep 🔔";
+    tg?.HapticFeedback?.notificationOccurred("error");
+  }
+});
+</script>
+</body>
+</html>

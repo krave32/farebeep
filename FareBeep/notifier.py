@@ -378,6 +378,30 @@ class TelegramBot:
         except Exception:
             return False
 
+    def send_beep_app(self, to: str, url: str) -> bool:
+        """Open the Mini App beep form (the WhatsApp-Flow equivalent): a
+        web_app inline button launches the embedded form inside the chat.
+        Telegram requires an https URL - callers fall back to the guided
+        TRACK path when the app is not on a public origin. Best-effort."""
+        if not self._ready or not (url or "").startswith("https://"):
+            return False
+        try:
+            resp = self._http.post(
+                self._api_url("sendMessage"),
+                json={"chat_id": to,
+                      "text": ("🎯 Set a beep - pick the route and we'll "
+                               "watch the fares for you."),
+                      "reply_markup": {"inline_keyboard": [[
+                          {"text": "🎯 Set a beep",
+                           "web_app": {"url": url}}]]}})
+            resp.raise_for_status()
+            ok = bool(resp.json().get("ok"))
+            logger.info("Telegram beep-app button sent to %s (ok=%s)", to, ok)
+            return ok
+        except Exception as e:
+            logger.error("Telegram beep-app failed to %s: %s", to, e)
+            return False
+
     def send_template(self, to: str, template_name: str,
                       body_parameters: list = None,
                       language: str = "en_US",
