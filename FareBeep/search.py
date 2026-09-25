@@ -231,6 +231,10 @@ def _offer_to_fare(offer: dict) -> dict:
         "flight_number": offer.get("flight_no"),
         "seats_left": offer.get("seats_left"),
         "verify_link": None,
+        # Carried through so the chat booking gate can store it on the
+        # booking session: token + traveller name at webhook time = a
+        # REAL supplier PNR after payment (no extra user round-trip).
+        "booking_token": offer.get("booking_token"),
     }
 
 

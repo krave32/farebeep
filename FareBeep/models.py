@@ -111,6 +111,11 @@ class ChatState(Base):
     agent_history = Column(JSON, nullable=True)    # [{role, content}...] - the
                                                  # Groq agent's rolling chat
                                                  # memory (last turns only)
+    pending_booking = Column(JSON, nullable=True)  # {origin_iata, destination_iata,
+                                                 #  flight_date, price, airline,
+                                                 #  travellers, stage: "name"} -
+                                                 # deterministic chat-booking
+                                                 # collection (main._try_booking_answer)
     support_ticket = Column(JSON, nullable=True)   # {id, opened_at, trigger,
                                                  # status, messages: [...]} -
                                                  # the human-support relay

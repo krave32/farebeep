@@ -513,12 +513,14 @@ def test_supplier_engine_collapses_single_airline_to_one(monkeypatch):
 
 def test_supplier_engine_offers_map_to_the_fare_contract(monkeypatch):
     """_offer_to_fare: supplier shape -> the fare dict the ledger + replies
-    speak (airline_name wins; no public URL exists so verify_link is None)."""
+    speak (airline_name wins; no public URL exists so verify_link is None;
+    the booking_token rides along for the chat booking gate)."""
     fare = search_module._offer_to_fare(_offer(98000.0, "P4", "P4 202"))
     assert fare == {"price": 98000.0, "currency": "NGN", "airline": "P4",
                     "departs_at": "07:10", "arrival_time": "08:30",
                     "duration": "1h 20m", "flight_number": "P4 202",
-                    "seats_left": 5, "verify_link": None}
+                    "seats_left": 5, "verify_link": None,
+                    "booking_token": "tok-P4 202"}
 
 
 # Captured at import, BEFORE conftest's autouse hermetic fixture stubs the

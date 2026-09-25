@@ -199,4 +199,24 @@ create table if not exists delivery_receipts (
 create index if not exists idx_delivery_receipts_phone
     on delivery_receipts (phone, updated_at);
 
+-- ---------------------------------------------------------------------------
+-- chat_state - per-chat conversational memory (models.ChatState)
+-- One row per phone; JSON slots survive restarts/replicas. Newer slots
+-- (pending_booking etc.) ship as additive migrations in database.py so a
+-- fresh SQL-editor run of this file also carries them.
+-- ---------------------------------------------------------------------------
+create table if not exists chat_state (
+    id          integer generated always as identity primary key,
+    phone       text unique not null,
+    last_fare   jsonb,
+    last_fares  jsonb,
+    pending_fare jsonb,
+    pending_requote jsonb,
+    pending_ticket_details jsonb,
+    agent_history jsonb,
+    support_ticket jsonb,
+    pending_booking jsonb,
+    updated_at  timestamptz not null default now()
+);
+
 commit;

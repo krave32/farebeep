@@ -1720,6 +1720,14 @@ def _handle_incoming_message(phone: str, text: str) -> None:
             if _try_ticket_details_answer(db, user, text):
                 return
 
+            # BOOKING GATE (deterministic chat booking): after a live
+            # re-quote was held, the user's reply is the passenger's
+            # NAME - never a fresh search, never an agent turn. This is
+            # the plain-text equivalent of the button Book path, immune
+            # to LLM timeouts (the bug the E2E smoke caught).
+            if _try_booking_answer(db, user, text):
+                return
+
             # REQUOTE GATE: after "the price moved to ₦X - still lock it?",
             # a bare yes/book answer proceeds with the already-live-quoted
             # fare; a no/cancel politely aborts. Anything naming a city or
@@ -1885,6 +1893,73 @@ def _say(phone: str, msg: str, user_name: str = None,
 _YES_WORDS = {"yes", "yeah", "yep", "y", "sure", "ok", "okay", "alright",
               "book", "lock", "proceed", "confirm", "continue", "go", "ahead"}
 _NO_WORDS = {"no", "nope", "nah", "cancel", "forget", "never", "stop"}
+
+# Booking-name collection: words too short/numeric to be a person's name
+# (a bare "2" or "yes" in the booking gate is a stray pick/answer, not
+# "my name is Ed").
+_NAME_TOO_SHORT = re.compile(r"^[^A-Za-z]*$")
+
+
+def _booking_name_ok(text: str) -> bool:
+    """A plausible passenger name for the booking gate: has letters, is
+    short enough to be a name, and is not a bare yes/no/digit answer."""
+    t = (text or "").strip()
+    if not t or len(t) > 80 or not re.search(r"[A-Za-z]", t):
+        return False
+    if t.lower() in (_YES_WORDS | _NO_WORDS) or _NAME_TOO_SHORT.match(t):
+        return False
+    return True
+
+
+def _try_booking_answer(db, user: User, text: str) -> bool:
+    """THE DETERMINISTIC BOOKING GATE - plain-text name collection.
+
+    When a live re-quote was held (pending_booking set), the user's next
+    reply is the traveller's full name: we build the travellers dict,
+    call the SAME create_booking path the button taps use, and send the
+    Paystack link. No agent loop, no intent parsing - the exact failure
+    mode ('Gideon sha' swallowed by a Groq timeout) is unreachable here.
+
+    Falls back to the BUTTON path (fare cards) when the hold expired or
+    the reply isn't a plausible name: a stray digit/yes re-enters the
+    normal gates, and a REAL new request (a city name, a route) flows to
+    search as usual. Returns True when the message was consumed."""
+    pending = chatstate.get_pending_booking(db, user.phone)
+    if not pending:
+        return False
+    text = (text or "").strip()
+
+    # A negation cancels the whole booking attempt - say so plainly.
+    if text.lower() in _NO_WORDS or "cancel" in text.lower():
+        chatstate.clear_pending_booking(db, user.phone)
+        _say(user.phone, "No problem - booking dropped. Nothing was held "
+                        "or charged.", user.name)
+        return True
+
+    if _booking_name_ok(text):
+        parts = text.split()
+        travellers = {"first_name": parts[0],
+                      "last_name": " ".join(parts[1:]) or parts[0],
+                      "phone": user.phone}
+        chatstate.clear_pending_booking(db, user.phone)
+        _create_and_send_booking(
+            db, user, pending["origin_iata"], pending["destination_iata"],
+            pending["flight_date"],
+            {"price": pending["price"], "airline": pending.get("airline")},
+            flight_iata=pending.get("flight_iata"),
+            extra_details={
+                "booking_token": pending.get("booking_token"),
+                "passengers": {"adults": 1, "children": 0, "infants": 0},
+                "travellers": travellers})
+        return True
+
+    # Not a name and not a cancel: the hold has likely gone stale (or the
+    # user changed topic). Drop it - the message falls through to the
+    # normal gates so a genuine new request still works.
+    chatstate.clear_pending_booking(db, user.phone)
+    logger.info("Booking gate dropped (not a name): %r from %s",
+                text[:40], user.phone)
+    return False
 
 
 def _try_ticket_details_answer(db, user: User, text: str) -> bool:
@@ -2384,6 +2459,35 @@ def _reply_booking(db, user: User, intent: brain.Intent,
     # THE PRICE-MOVE HANDCHECK: the live re-quote may differ from what the
     # user was shown. Within the tolerance (the natural volatility buffer)
     # book silently; beyond it, ASK first - never take a silent price jump.
+    #
+    # DETERMINISTIC NAME COLLECTION: a bookable fare (it carries a
+    # booking_token) can become a REAL PNR the moment payment lands -
+    # but only with the traveller's name. Unknown name + token present:
+    # hold the re-quoted fare in pending_booking and ask. The next reply
+    # is consumed as the name by _try_booking_answer - no agent loop, no
+    # NLU between the price hold and money moving. Fares WITHOUT a token
+    # (ledger rows, old-shape quotes) keep the one-step BOOK contract;
+    # their tickets go out via the post-payment details flow.
+    if not (user.name or "").strip() and fare.get("booking_token"):
+        chatstate.clear_last_fares(db, user.phone)   # superseded by the question
+        chatstate.set_pending_booking(db, user.phone, {
+            "origin_iata": origin_iata,
+            "destination_iata": destination_iata,
+            "flight_date": fare["flight_date"],
+            "price": fare["price"],
+            "airline": fare.get("airline"),
+            "booking_token": fare.get("booking_token"),
+            "flight_iata": fare.get("flight_number") or intent.flight,
+            "stage": "name"})
+        _say(user.phone,
+             f"Great - {city_name(origin_iata)} -> "
+             f"{city_name(destination_iata)} on {fare['flight_date']} at "
+             f"₦{fare['price']:,.0f} ({fare.get('airline') or 'airline'}), "
+             f"re-checked live just now.\n"
+             f"What's the passenger's full name (as on their ID)? I'll "
+             f"hold the total for 10 minutes straight after.",
+             user.name)
+        return
     if (expected_price is not None
             and abs(fare["price"] - expected_price) > REQUOTE_TOLERANCE_NGN):
         chatstate.clear_last_fares(db, user.phone)   # superseded by the question
@@ -2413,21 +2517,34 @@ def _reply_booking(db, user: User, intent: brain.Intent,
 
 def _create_and_send_booking(db, user: User, origin_iata: str,
                              destination_iata: str, flight_date: str,
-                             fare: dict, flight_iata: str = None) -> None:
+                             fare: dict, flight_iata: str = None,
+                             extra_details: dict = None) -> None:
     """Create the 10-minute booking session and send the held-total
-    message with the confirmation-page link. Shared by the direct BOOK flow
-    and the re-quoted "yes" flow."""
+    message with the confirmation-page link. Shared by the direct BOOK
+    flow, the re-quoted "yes" flow, and the deterministic booking gate.
+
+    extra_details: merged into flight_details after creation (the booking
+    gate's travellers/booking_token - stored so the paid webhook can
+    ticket via the supplier without another user round-trip)."""
     bookings = BookingService(db)
     try:
         result = bookings.create_booking(
             user.user_id, origin_iata, destination_iata,
             flight_date, fare["price"],
             flight_iata=flight_iata,
-            email=user.email or f"{user.phone.replace('+', '')}@farebeep.ng",            airline=fare.get("airline"), source="live")
+            email=user.email or f"{user.phone.replace('+', '')}@farebeep.ng",
+            airline=fare.get("airline"), source="live")
     except Exception as e:
         logger.error("Booking creation failed: %s", e)
         _say(user.phone, "Payment link could not be created. Try again in a minute.", user.name)
         return
+
+    if extra_details:
+        session = result["session"]
+        details = dict(session.flight_details or {})
+        details.update(extra_details)
+        session.flight_details = details
+        db.commit()
 
     session = result["session"]
     expires = result["expires_at"].strftime("%H:%M")

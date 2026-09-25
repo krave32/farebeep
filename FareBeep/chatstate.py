@@ -94,6 +94,26 @@ def clear_pending_requote(db, phone: str) -> None:
     _write(db, phone, "pending_requote", None)
 
 
+# --- deterministic booking collection ---------------------------------------
+# {origin_iata, destination_iata, flight_date, price, airline,
+#  travellers: {first_name, last_name, phone}, stage: "name"} - the chat
+# booking handshake's collection state. Set when the live re-quote holds
+# and the traveller's full name is not yet known; completed or dropped
+# in main._try_booking_answer. Makes plain-text booking deterministic:
+# no agent loop rides between the price hold and money moving.
+
+def get_pending_booking(db, phone: str) -> Optional[dict]:
+    return _read(db, phone, "pending_booking")
+
+
+def set_pending_booking(db, phone: str, ctx: dict) -> None:
+    _write(db, phone, "pending_booking", ctx)
+
+
+def clear_pending_booking(db, phone: str) -> None:
+    _write(db, phone, "pending_booking", None)
+
+
 def get_pending_ticket_details(db, phone: str) -> Optional[dict]:
     return _read(db, phone, "pending_ticket_details")
 
