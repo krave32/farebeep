@@ -25,13 +25,10 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 
 database._engine = database.make_engine("sqlite://", "SQLite (fallback)")
 
-import time  # noqa: E402
-
 import pytest  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
-from FareBeep.config import FX_RATE_NGN_PER_USD  # noqa: E402
 from FareBeep.models import Base  # noqa: E402
 
 _shared_engine = create_engine(
@@ -46,20 +43,15 @@ database._sessionmaker = sessionmaker(bind=_shared_engine,
 
 @pytest.fixture(autouse=True)
 def _hermetic_network(monkeypatch):
-    """No test may dial the real internet. The two live-data seams that
-    leak out of otherwise-offline tests:
-    - SerpAPI (search.py): fetch_list/fetch raise SearchError locally when
-      SERPAPI_API_KEY is empty, so clearing it turns live searches into a
-      clean failure instead of a network call.
-    - FX rate (search.py): ngn_per_usd short-circuits to the floor value
-      (FX_RATE_NGN_PER_USD) when the cache is fresh - pre-filling it
-      matches what tests already expect on API failure.
+    """No test may dial the real internet. The live-data seam that leaked
+    out of otherwise-offline tests:
+    - the live supplier engine (search.SupplierLiveEngine): _offers is
+      stubbed to return [] so any ledger miss is a clean 'no fare' instead
+      of a network call.
     """
     from FareBeep import search as search_mod
-    monkeypatch.setattr(search_mod, "SERPAPI_API_KEY", None)
-    monkeypatch.setattr(search_mod, "_fx_cache",
-                        {"ts": time.time(), "rate": FX_RATE_NGN_PER_USD,
-                         "live": FX_RATE_NGN_PER_USD})
+    monkeypatch.setattr(search_mod.SupplierLiveEngine, "_offers",
+                        lambda self, origin, destination, flight_date: [])
 
     # Telegram Bot API: the webhook's best-effort typing bubble constructs a
     # fresh TelegramBot() (module-local import), and main.notifier is a

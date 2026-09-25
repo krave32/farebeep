@@ -7,8 +7,8 @@ Flow (per the settlement brief):
      minutes for card payments and 13 minutes otherwise. The extra 3
      minutes are an internal buffer for slow bank-transfer webhooks; the
      user still sees the 10-minute promise.
-  2. The Price Lock   - the fare is refreshed LIVE (SerpApi, ledger ignored)
-     so the quoted price is real at lock time
+  2. The Price Lock   - the fare is refreshed LIVE (the inventory supplier,
+     ledger ignored) so the quoted price is real at lock time
   3. The Payment Link - a Paystack Test Link is generated for
      (Net_Fare + ARHA_Markup + 100) / (1 - 0.015)
   4. The Logic        - when the Paystack webhook (charge.success) arrives:
@@ -86,7 +86,7 @@ class BookingService:
                        scheduled_departure=None,
                        email: str = None,
                        airline: str = None,
-                       source: str = "serpapi",
+                       source: str = "live",
                        payment_method: str = None) -> dict:
         """Create a `booking_session` row + Paystack Test Link.
 

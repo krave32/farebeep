@@ -1,7 +1,7 @@
 """THE DEFENSIVE INTEGRATION LAYER - resilient HTTP + churn-proof contracts.
 
-Everything that talks to a third-party API (SerpApi today, Tiqwa next) sits
-behind this module. Its job is to make vendor churn LOUD instead of silent:
+Everything that talks to a third-party API sits behind this module. Its job
+is to make vendor churn LOUD instead of silent:
 
   1. RetryClient      - timeouts, exponential backoff + jitter, retry on
                         429/5xx/connect errors, request-id logging.
@@ -13,8 +13,10 @@ behind this module. Its job is to make vendor churn LOUD instead of silent:
                         ledger dict shape the rest of FareBeep consumes.
   4. probe_contract   - run a live request + validate against a pinned field
                         map; the report is what /health should check.
-  5. get_live_engine  - FARE_PROVIDER switch (serpapi now, tiqwa later) with
-                        a FailoverEngine so one vendor never takes us down.
+  5. get_live_engine  - FARE_PROVIDER switch (ledger_only default,
+                        tiqwa later) with a FailoverEngine so one vendor
+                        never takes us down. The chat paths run the
+                        inventory suppliers through search.SupplierLiveEngine.
 """
 import logging
 import random
@@ -292,23 +294,25 @@ class FailoverEngine:
 def get_live_engine():
     """Build the live fare engine configured by FARE_PROVIDER.
 
-    "serpapi" (default today) = SerpApiGoogleFlights (the pitch-deck demo
-    source). "tiqwa" = the production consolidator engine - arrives in
-    FareBeep/tiqwa.py once the API token + contract are available; it must
-    implement the same fetch(origin, destination, flight_date) contract.
+    "ledger_only" (default) = LedgerOnlyEngine - the Shared Ledger answers
+    every query and a miss means no fare; live serving is the inventory
+    supplier's job (search.SupplierLiveEngine / the tools layer), never an
+    USD aggregator. "tiqwa" = the production consolidator engine - arrives
+    in FareBeep/tiqwa.py once the API token + contract are available; it
+    must implement the same fetch(origin, destination, flight_date) contract.
     """
-    from FareBeep.search import SerpApiGoogleFlights
+    from FareBeep.search import LedgerOnlyEngine
 
-    provider = (FARE_PROVIDER or "serpapi").lower()
+    provider = (FARE_PROVIDER or "ledger_only").strip().lower()
     if provider == "tiqwa":
         try:
             from FareBeep.tiqwa import TiqwaFlights
             return TiqwaFlights()
         except ImportError:  # pragma: no cover - Tiqwa client not shipped yet
             logger.warning("FARE_PROVIDER=tiqwa but FareBeep/tiqwa.py missing - "
-                           "falling back to SerpApi")
-            return SerpApiGoogleFlights()
-    return SerpApiGoogleFlights()
+                           "falling back to ledger_only")
+            return LedgerOnlyEngine()
+    return LedgerOnlyEngine()
 
 
 def _tiqwa_ready() -> bool:

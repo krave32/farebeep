@@ -89,7 +89,7 @@ create table if not exists booking_sessions (
     flight_date       date not null,
     flight_iata       text,               -- e.g. 'P47123' when the user named the flight
     scheduled_departure timestamptz,      -- departure time driving the 3h status watch
-    airline_price     numeric not null,          -- NET fare from the LIVE SerpApi hit
+    airline_price     numeric not null,          -- NET fare from the LIVE supplier hit
     markup            numeric not null default 5000,  -- ARHA_MARKUP_NGN flat margin
     processing_fee    numeric not null,          -- Paystack fee (user-funded)
     total_price       numeric not null,          -- what the user pays (incl. markup + fee)

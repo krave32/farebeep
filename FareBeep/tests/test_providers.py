@@ -216,16 +216,22 @@ def test_failover_prefers_primary_when_healthy():
 # ---------------------------------------------------------------------------
 # FACTORY - provider switch
 # ---------------------------------------------------------------------------
-def test_factory_defaults_to_serpapi(monkeypatch):
-    monkeypatch.setattr(providers, "FARE_PROVIDER", "serpapi")
+def test_factory_defaults_to_ledger_only(monkeypatch):
+    monkeypatch.setattr(providers, "FARE_PROVIDER", "ledger_only")
     engine = providers.get_live_engine()
-    assert engine.__class__.__name__ == "SerpApiGoogleFlights"
+    assert engine.__class__.__name__ == "LedgerOnlyEngine"
+
+
+def test_factory_unknown_provider_falls_back_to_ledger_only(monkeypatch):
+    monkeypatch.setattr(providers, "FARE_PROVIDER", "retired_demo_source")
+    engine = providers.get_live_engine()
+    assert engine.__class__.__name__ == "LedgerOnlyEngine"
 
 
 def test_factory_tiqwa_falls_back_without_client(monkeypatch):
     monkeypatch.setattr(providers, "FARE_PROVIDER", "tiqwa")
     engine = providers.get_live_engine()
-    assert engine.__class__.__name__ == "SerpApiGoogleFlights"
+    assert engine.__class__.__name__ == "LedgerOnlyEngine"
 
 
 def test_tiqwa_probe_skipped_without_credentials(monkeypatch):

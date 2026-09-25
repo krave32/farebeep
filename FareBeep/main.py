@@ -2218,8 +2218,9 @@ def _reply_fare(db, user: User, intent: brain.Intent) -> None:
              f"{city_name(intent.destination_iata)} {fare['flight_date']}:\n"
              f"₦{fare['price']:,.0f} via {fare['airline']} "
              f"({_fresh_label(fare)})\n"
-             f"Verify: {fare['verify_link']}\n"
-             f"Reply BOOK - I'll re-confirm the live price before you "
+             + (f"Verify: {fare['verify_link']}\n" if fare.get("verify_link")
+                else "")
+             + f"Reply BOOK - I'll re-confirm the live price before you "
              f"pay - or TRACK to get a Beep when it drops.",
              user.name)
         _send_fare_cards(user, [fare], origin_iata, intent.destination_iata)
@@ -2259,8 +2260,8 @@ def _reply_booking(db, user: User, intent: brain.Intent,
                    picked_fare: dict = None) -> None:
     """THE LIVE HANDSHAKE - what happens when a user replies BOOK.
 
-    1. FORCE REFRESH: the Shared Ledger is ignored; SerpApi is queried
-       LIVE so the seat exists at the quoted price right now.
+    1. FORCE REFRESH: the Shared Ledger is ignored; the inventory supplier
+       is queried LIVE so the seat exists at the quoted price right now.
     2. Session: a booking_session row is saved with expires_at = now +
        13m by default (10m once the payment method is card).
     3. The WhatsApp/TG call: the Paystack TEST link + the held-total
@@ -2396,9 +2397,7 @@ def _create_and_send_booking(db, user: User, origin_iata: str,
             user.user_id, origin_iata, destination_iata,
             flight_date, fare["price"],
             flight_iata=flight_iata,
-            email=user.email or f"{user.phone.replace('+', '')}@farebeep.ng",
-            airline=fare.get("airline"),
-            source="serpapi")
+            email=user.email or f"{user.phone.replace('+', '')}@farebeep.ng",            airline=fare.get("airline"), source="live")
     except Exception as e:
         logger.error("Booking creation failed: %s", e)
         _say(user.phone, "Payment link could not be created. Try again in a minute.", user.name)

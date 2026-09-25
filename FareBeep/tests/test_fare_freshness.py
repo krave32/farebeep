@@ -109,7 +109,7 @@ def _post(client, text):
 
 def test_freshness_labels():
     now = utcnow()
-    assert fare_freshness({"source": "serpapi"}) == "checked just now"
+    assert fare_freshness({"source": "live"}) == "checked just now"
     assert fare_freshness({"source": "247travels"}) == "checked just now"
     assert fare_freshness({"source": "live"}) == "checked just now"
     aged = (now - timedelta(minutes=12)).isoformat()
@@ -154,7 +154,7 @@ def test_live_result_stamped_just_now(session_factory):
     db = session_factory()
     svc = LedgerSearch(db, live=_Live(), ledger_ttl_minutes=30)
     out = svc.search("LOS", "ABV", "2026-10-02")
-    assert out["source"] == "serpapi" and out["checked_at"] is not None
+    assert out["source"] == "live" and out["checked_at"] is not None
     assert fare_freshness(out) == "checked just now"
     db.close()
 

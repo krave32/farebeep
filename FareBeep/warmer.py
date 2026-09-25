@@ -4,7 +4,7 @@ The ledger only learns when a human asks; unwatched routes go stale and
 every question costs a live call. The warmer re-searches the busiest
 routes on a timer and upserts the cheapest sane fare per route+date.
 
-The configured INVENTORY supplier only (suppliers.py): no SerpApi, no
+The configured INVENTORY supplier only (suppliers.py): no USD aggregator, no
 scraping here.
 Surge prices are skipped, never cached; no 90s anomaly hold on this
 path (browse-speed - the BOOK handshake re-verifies before money).

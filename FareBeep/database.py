@@ -6,7 +6,7 @@ Supabase SQL Editor). The shared ledger (fare_ledger) is what makes FareBeep
 a *community* utility: every search result is UPSERTed (Postgres
 ON CONFLICT - see search._upsert_fare) so the next user asking the same
 (origin, destination, date) gets a <500ms ledger hit instead of a paid
-SerpApi call.
+live supplier call.
 
 Connection strategy (cloud latency):
   - psycopg2 driver, pool_pre_ping so a dead Supabase connection is

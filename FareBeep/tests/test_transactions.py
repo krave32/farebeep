@@ -41,7 +41,7 @@ def test_create_booking_mission_schema(db, user, fake_paystack_link):
 
     result = svc.create_booking(
         user.user_id, "ABV", "PHC", "2026-08-20", 85000.0,
-        airline="Air Peace", source="serpapi")
+        airline="Air Peace", source="live")
 
     session = db.query(BookingSession).first()
     assert session.status == SessionStatus.PENDING.value
@@ -54,7 +54,7 @@ def test_create_booking_mission_schema(db, user, fake_paystack_link):
     assert session.flight_details["route"] == {
         "origin": "ABV", "destination": "PHC", "flight_date": "2026-08-20"}
     assert session.flight_details["net_price"] == 85000.0
-    assert session.flight_details["source"] == "serpapi"
+    assert session.flight_details["source"] == "live"
     # total_price = (85000 + 5000 + 100) / 0.985
     assert session.total_price == pytest.approx(91472.08)
     assert session.markup == 5000.0

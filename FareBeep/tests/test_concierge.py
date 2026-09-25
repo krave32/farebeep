@@ -36,7 +36,7 @@ class RecordingLedger:
     def __init__(self, db, fare=None, fares=None):
         self.calls = []
         self.fare = fare or {
-            "source": "serpapi", "flight_date": "2026-08-14",
+            "source": "live", "flight_date": "2026-08-14",
             "price": 118500.0, "airline": "Air Peace",
             "verify_link": "https://example.com/fare",
             "above_guardrail": False,
@@ -104,15 +104,15 @@ def _install_fake_bookings(monkeypatch, calls):
 def _ranked_fares():
     """Three sane fares for the ranked-list flow."""
     return [
-        {"source": "serpapi", "flight_date": "2026-08-14", "price": 98000.0,
+        {"source": "live", "flight_date": "2026-08-14", "price": 98000.0,
          "airline": "Rano Air", "departs_at": "06:00",
          "flight_number": "RN 303", "verify_link": "https://example.com/1",
          "above_guardrail": False},
-        {"source": "serpapi", "flight_date": "2026-08-14", "price": 118500.0,
+        {"source": "live", "flight_date": "2026-08-14", "price": 118500.0,
          "airline": "Air Peace", "departs_at": "07:10",
          "flight_number": "P4 111", "verify_link": "https://example.com/2",
          "above_guardrail": False},
-        {"source": "serpapi", "flight_date": "2026-08-14", "price": 154000.0,
+        {"source": "live", "flight_date": "2026-08-14", "price": 154000.0,
          "airline": "Green Africa", "departs_at": "08:00",
          "flight_number": "Q9 222", "verify_link": "https://example.com/3",
          "above_guardrail": False},
@@ -310,7 +310,7 @@ def test_natural_shortcut_searches_with_default_origin(client):
 def test_surge_price_warns_and_offers_track(client):
     test_client, fake, ledger = client
     ledger["inst"] = RecordingLedger(
-        None, fare={"source": "serpapi", "flight_date": "2026-08-14",
+        None, fare={"source": "live", "flight_date": "2026-08-14",
                     "price": 660000.0, "airline": "Green Africa Airways",
                     "verify_link": "https://example.com/fare",
                     "above_guardrail": True})

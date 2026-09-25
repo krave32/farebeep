@@ -160,7 +160,7 @@ def test_same_book_wamid_creates_one_booking(client, monkeypatch,
             pass
 
         def search(self, *a, **k):
-            return {"source": "serpapi", "flight_date": "2026-09-20",
+            return {"source": "live", "flight_date": "2026-09-20",
                     "price": 85000.0, "airline": "Rano Air",
                     "flight_number": "RN 303",
                     "verify_link": "https://example.com/x"}
@@ -229,7 +229,7 @@ def test_booking_crash_mid_turn_documents_duplicates(client, monkeypatch,
             pass
 
         def search(self, *a, **k):
-            return {"source": "serpapi", "flight_date": "2026-09-20",
+            return {"source": "live", "flight_date": "2026-09-20",
                     "price": 85000.0, "airline": "Rano Air",
                     "flight_number": "RN 303",
                     "verify_link": "https://example.com/x"}

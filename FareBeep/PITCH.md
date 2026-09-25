@@ -25,7 +25,7 @@
 FareBeep automates the entire agent conversation in one WhatsApp thread:
 
 1. **Search** — user sends a natural-language message; Gemini extracts route + date (e.g. *"Lagos to Abuja tomorrow"*, *"book PHC to Enugu Saturday"*).
-2. **Fare** — real prices from Google Flights (via SerpApi), converted to NGN with an operator-set FX rate, cached in a local ledger to cut cost and latency.
+2. **Fare** — real, bookable NGN prices from Nigerian inventory suppliers (247travels/QuickAir), cached in a local ledger to cut cost and latency.
 3. **Book** — one reply to "BOOK" creates a 10-minute booking session and a Paystack payment link (airline price + NGN 3,000 markup + 1.5% processing fee, grossed up so the utility nets the full markup).
 4. **Ticket** — Paystack webhook (HMAC-SHA512 verified) settles the session; payments arriving after the 10-minute expiry are rejected and refund-flagged — the airline API is never called on an expired session.
 5. **Status Beep** — 3 hours before departure, FareBeep starts watching the flight (Aviationstack). If it turns *delayed, cancelled, diverted, or landed*, the passenger gets a proactive WhatsApp template message.

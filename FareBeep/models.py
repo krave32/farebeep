@@ -143,7 +143,7 @@ class FareLedger(Base):
 # ---------------------------------------------------------------------------
 # fx_rates - USD->NGN snapshots (price tracking, one row per daily fetch)
 # The worker records a snapshot every FX_RATE_TTL_HOURS so the founder can
-# see the naira trend; ngn_per_usd() converts with the latest live rate.
+# see the naira trend (quoting itself never converts: suppliers price in NGN).
 # ---------------------------------------------------------------------------
 class FxRate(Base):
     __tablename__ = "fx_rates"
@@ -185,7 +185,7 @@ class BookingSession(Base):
     flight_date = Column(String)             # "YYYY-MM-DD"
     flight_iata = Column(String, nullable=True)           # e.g. "P47123"
     scheduled_departure = Column(DateTime(timezone=True), nullable=True)
-    airline_price = Column(Float)            # net fare from the LIVE SerpApi hit
+    airline_price = Column(Float)            # net fare from the LIVE supplier hit
     markup = Column(Float, default=5000.0)   # ARHA_MARKUP_NGN flat margin
     processing_fee = Column(Float)           # Paystack fee (user-funded)
     total_price = Column(Float)              # airline_price + markup + fee

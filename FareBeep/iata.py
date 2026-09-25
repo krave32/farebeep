@@ -7,7 +7,7 @@ Gemini (or any LLM) to be perfect with IATA codes ("PHC" vs "PH", "ABB" vs
 Migrated from naijafly/app/utils/intent_parser.py (CITY_TO_IATA) - the
 rule-based *parser* itself is dropped; only the categorical mapping survives.
 
-Every city/IATA pair that reaches an external API (SerpApi, Aviationstack,
+Every city/IATA pair that reaches an external API (the inventory suppliers, Aviationstack,
 Google Flights links) must first pass through `resolve_iata()` here.
 """
 from typing import Optional

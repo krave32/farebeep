@@ -17,6 +17,7 @@ Two run modes:
 Run:  python -m FareBeep.worker        (from the parent of FareBeep/)
 or:   python -c "import FareBeep.worker; FareBeep.worker.main()"
 """
+import httpx
 import logging
 import sys
 import time
@@ -29,19 +30,42 @@ from FareBeep.config import (FX_RATE_TTL_HOURS, STATUS_POLL_SECONDS,  # noqa: E4
                              STATUS_WATCH_LEAD_HOURS, TRACKING_POLL_HOURS, WARM_INTERVAL_MINUTES)
 from FareBeep.database import SessionLocal, init_db  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# USD -> NGN snapshot rate (open.er-api.com) - the founder's FX history.
+# QUOTING never converts currencies (live supplier fares arrive in NGN);
+# this feed exists only so record_fx_rate() can chart naira movement over
+# time (models.FxRate). Kept local to the worker now that search.py no
+# longer needs a live USD->NGN path.
+# ---------------------------------------------------------------------------
+FX_API_URL = "https://open.er-api.com/v6/latest/USD"
+
+
+def fetch_usd_ngn(http_client: httpx.Client = None) -> Optional[float]:
+    """The official USD->NGN rate (free, updated daily ~midnight UTC).
+    Returns None on failure."""
+    try:
+        client = http_client or httpx.Client(timeout=8.0)
+        resp = client.get(FX_API_URL)
+        resp.raise_for_status()
+        rate = float((resp.json().get("rates") or {}).get("NGN"))
+        return rate if rate > 0 else None
+    except Exception as e:
+        logger.warning("FX API failed: %s", e)
+        return None
+
 
 def record_fx_rate(db=None) -> Optional[float]:
     """PRICE TRACKING snapshot: fetch the official USD->NGN rate and persist
     an fx_rates row unless the last snapshot is fresher than
     FX_RATE_TTL_HOURS. Returns the recorded rate (None = skipped/down).
 
-    The row history is the founder's view of naira movement - the 'price
-    tracking' half of the FX strategy; ngn_per_usd() uses the live rate."""
+    The row history is the founder's view of naira movement - the FX
+    price-tracking record (quoting itself never converts: suppliers
+    price in NGN)."""
     from datetime import datetime, timedelta, timezone
 
     from FareBeep.config import FX_RATE_TTL_HOURS
     from FareBeep.models import FxRate
-    from FareBeep.search import fetch_usd_ngn
 
     db = db or SessionLocal()
     try:

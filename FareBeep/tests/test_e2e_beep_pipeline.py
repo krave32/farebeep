@@ -24,7 +24,7 @@ Hermeticity notes:
   - worker.run_fare_cycle resolves FareBeep.worker.SessionLocal at call
     time, so patching that name keeps the REAL Supabase engine untouched.
   - The live re-check behind force_refresh is reached through
-    FareBeep.search.SerpApiGoogleFlights; patching that name swaps the
+    FareBeep.search.SupplierLiveEngine; patching that class swaps the
     network client for a scripted fake (LedgerSearch instantiates it as
     its default `live` engine at construction time).
 """
@@ -70,8 +70,9 @@ class _MetaSpy:
 
 
 class _FakeLive:
-    """Scripted SerpApi stand-in: what the LIVE re-check (force_refresh)
-    returns for the route. `price=None` = provider has nothing."""
+    """Scripted live-supplier stand-in: what the LIVE re-check
+    (force_refresh) returns for the route. `price=None` = provider has
+    nothing."""
 
     def __init__(self):
         self.price = None
@@ -115,7 +116,7 @@ def client(monkeypatch, session_factory):
 @pytest.fixture
 def fake_live(monkeypatch):
     live = _FakeLive()
-    monkeypatch.setattr("FareBeep.search.SerpApiGoogleFlights",
+    monkeypatch.setattr("FareBeep.search.SupplierLiveEngine",
                         lambda: live)
     return live
 
@@ -231,7 +232,7 @@ def test_tap_to_watch_to_beep_end_to_end(client, session_factory,
     db.commit()
     db.close()
 
-    # cycle 2: the honesty gate re-checks LIVE (fake SerpApi) before
+    # cycle 2: the honesty gate re-checks LIVE (fake supplier) before
     # beeping - the alert carries the fresh price, not the cached one.
     fake_live.price = 80000.0
     assert worker.run_fare_cycle(notifier=_MetaSpy()) == 1

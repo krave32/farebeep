@@ -76,27 +76,11 @@ GEMINI_API_KEY = _get("GEMINI_API_KEY")
 # gemini-flash-latest is the current affordable flash model (verified 200).
 GEMINI_MODEL = _get("GEMINI_MODEL", "gemini-flash-latest")
 
-# --- SerpApi ---
-SERPAPI_API_KEY = _get("SERPAPI_API_KEY")
-SERPAPI_ENGINE = _get("SERPAPI_ENGINE", "google_flights")
-# Google Flights via SerpApi does NOT support NGN (verified live: 400
-# "Unsupported `NGN` for currency."); fares are fetched in USD and converted
-# with the daily NGN rate.
-SERPAPI_CURRENCY = _get("SERPAPI_CURRENCY", "USD")
-# FX_RATE_NGN_PER_USD is the ABSOLUTE FLOOR + offline fallback: the live
-# rate never goes below it (founder price-volatility protection). Set it to
-# the current parallel-market rate (13 Aug 2026: NGN 1,416-1,425).
-FX_RATE_NGN_PER_USD = _get_float("FX_RATE_NGN_PER_USD", 1425.0)
-# FX_SAFETY_MARGIN: quotes use the OFFICIAL/Google-basis rate (open.er-api,
-# ~CBN) plus this buffer - so prices track Google's naira display while a
-# sudden naira move can't wipe the margin. 0.03 = official + 3%.
-FX_SAFETY_MARGIN = _get_float("FX_SAFETY_MARGIN", 0.03)
+# --- FX snapshot (worker.record_fx_rate, the founder's price tracking) ---
 # How often the USD->NGN rate is re-fetched (open.er-api.com, free, no key)
-# and a snapshot row is recorded for the tracked history.
+# and a snapshot row is recorded for the tracked history. Quoting NEVER
+# converts USD: live supplier fares arrive in NGN.
 FX_RATE_TTL_HOURS = _get_int("FX_RATE_TTL_HOURS", 12)
-# Region bias for Google Flights results (ng = Nigerian market). This is a
-# supported param, distinct from currency - keep USD + this.
-SERPAPI_GL_REGION = _get("SERPAPI_GL_REGION", "ng")
 
 # --- Paystack ---
 PAYSTACK_SECRET_KEY = _get("PAYSTACK_SECRET_KEY")
@@ -111,10 +95,12 @@ HTTP_TIMEOUT = _get_float("HTTP_TIMEOUT", 20.0)
 HTTP_MAX_RETRIES = _get_int("HTTP_MAX_RETRIES", 3)
 
 # --- Fare source provider (providers.get_live_engine) ---
-# "serpapi" = the pitch-deck/demo source (Google Flights via SerpApi).
+# The USD demo aggregator (SerpApi/Google Flights) is RETIRED. Live fares
+# come from the inventory suppliers (Travels247/QuickAir, INVENTORY_PROVIDER)
+# through search.SupplierLiveEngine; "ledger_only" answers from the cache.
 # "tiqwa"  = the production consolidator engine (FareBeep/tiqwa.py). The
 #            client ships once the Tiqwa API token + contract are available.
-FARE_PROVIDER = _get("FARE_PROVIDER", "serpapi")
+FARE_PROVIDER = _get("FARE_PROVIDER", "ledger_only")
 TIQWA_API_KEY = _get("TIQWA_API_KEY")
 TIQWA_ENV = _get("TIQWA_ENV", "sandbox")
 TIQWA_BASE_URL = _get(

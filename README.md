@@ -24,8 +24,8 @@ User chat (Telegram live · WhatsApp via Meta Cloud API)
         ▼
 FastAPI  FareBeep/main.py          ← one process, every endpoint
   │  conversation: Groq agent (tool loop) → guided fallback (brain.py)
-  │  inventory:    Shared Ledger first; live miss → 247travels (agent
-  │               + /tools) or SerpApi/Google-Flights (deterministic paths)
+  │  inventory:    Shared Ledger first; live miss → the inventory supplier
+  │               (247travels/QuickAir, INVENTORY_PROVIDER)
   │  settlement:   Paystack HMAC-verified webhook (payments.py)
   │  flows:        encrypted /flow endpoint for "Set a beep" screens
   │                (whatsapp/flows.py + flow_screens.json)
@@ -60,9 +60,9 @@ FareBeep/
                      /health, landing page
   agent.py           Groq + LangChain conversational agent (tool loop)
   brain.py           deterministic intent parser (fallback + date parsing)
-  search.py          Shared Ledger search: ledger-first; miss → live engine
-                     (SerpApi/Google-Flights default, LedgerOnly probe for
-                     agent + /tools paths)
+  search.py          Shared Ledger search: ledger-first; miss → live supplier
+                     engine (SupplierLiveEngine; LedgerOnly probe for agent
+                     + /tools paths)
   travels247.py      247travels.com inventory client (async, JWT)
   providers.py       retry/parse/contract layer over external APIs
   alerts.py          fare-beep trigger rules (target price / >10% drop)
@@ -128,7 +128,7 @@ to the log instead — nothing else changes.
 
 **Key env vars** (all in `.env.example` with comments): `SUPABASE_DB_URL`,
 `MESSAGING_PROVIDER`, `TELEGRAM_BOT_TOKEN`, `META_*`, `GROQ_API_KEY`,
-`SERPAPI_API_KEY`, `TRAVELS247_*`, `PAYSTACK_*`, `ADMIN_TOKEN`
+`TRAVELS247_*`, `PAYSTACK_*`, `ADMIN_TOKEN`
 (unlocks `/admin` + `/admin/ops`; unset = those surfaces 404, closed by
 design), `ADMIN_ALERT_PHONE` (the support-relay console), `BEEP_FLOW_MODE`
 (`draft` while building the flow, `published` at go-live).
@@ -182,8 +182,8 @@ python -m pytest FareBeep/whatsapp/tests -q   # flow endpoint + router
 ```
 
 **505 passing** across 38 files — the conversation pipeline (concierge,
-pick gates, rate limiting), the Shared Ledger (ledger-first search, FX
-floor, price guardrail), the flow endpoint (validator rules, encryption,
+pick gates, rate limiting), the Shared Ledger (ledger-first search, price
+guardrail), the flow endpoint (validator rules, encryption,
 idempotent subscribe), the settlement engine (HMAC, expiry, refund
 flagging), ticket/boarding-pass PDFs, delivery retries + dead letters,
 crash recovery, the support relay, the ops cockpit, and a full

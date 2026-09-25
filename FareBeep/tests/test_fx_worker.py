@@ -21,13 +21,13 @@ def fresh_db():
 
 @pytest.fixture
 def rate_ok(monkeypatch):
-    monkeypatch.setattr("FareBeep.search.fetch_usd_ngn",
+    monkeypatch.setattr("FareBeep.worker.fetch_usd_ngn",
                         lambda http_client=None: 1360.25)
 
 
 @pytest.fixture
 def rate_down(monkeypatch):
-    monkeypatch.setattr("FareBeep.search.fetch_usd_ngn",
+    monkeypatch.setattr("FareBeep.worker.fetch_usd_ngn",
                         lambda http_client=None: None)
 
 

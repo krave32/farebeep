@@ -1,4 +1,4 @@
-"""PRICE GUARDRAIL + NIGERIA-FIRST LINKS - the sanity layer for fares."""
+"""PRICE GUARDRAIL - the sanity layer for fares."""
 from datetime import datetime, timedelta
 
 import pytest
@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from FareBeep.models import Base, FareLedger, utcnow
-from FareBeep.search import LedgerSearch, _ngn_verify_link
+from FareBeep.search import LedgerSearch
 
 
 @pytest.fixture
@@ -93,27 +93,3 @@ def test_sane_price_enters_the_shared_ledger(session_factory):
     assert result["above_guardrail"] is False
     row = db.query(FareLedger).first()
     assert row is not None and row.price == 118500.0
-
-
-def test_link_currency_rewritten_to_ngn():
-    link = "https://www.google.com/travel/flights?hl=en&gl=ng&curr=USD&tfs=ABC123"
-    out = _ngn_verify_link(link)
-    assert "curr=NGN" in out
-    assert "curr=USD" not in out
-    assert "tfs=ABC123" in out
-
-
-def test_link_without_currency_gets_ngn_appended():
-    out = _ngn_verify_link("https://www.google.com/travel/flights?hl=en")
-    assert out.endswith("&curr=NGN")
-
-
-def test_link_other_currency_rewritten():
-    out = _ngn_verify_link("https://www.google.com/travel/flights?curr=EUR&hl=en")
-    assert "curr=NGN" in out
-    assert "curr=EUR" not in out
-
-
-def test_empty_link_passthrough():
-    assert _ngn_verify_link("") == ""
-    assert _ngn_verify_link(None) is None
