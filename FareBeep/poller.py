@@ -85,14 +85,25 @@ def _handle(chat_id: str, text: str) -> None:
 
 
 def poll_once(client: httpx.Client, offset: int) -> int:
-    """Fetch one batch of updates, route each message, return next offset."""
+    """Fetch one batch of updates, route each message, return next offset.
+
+    message + callback_query: fare-card button taps ride the same
+    _dispatch_tap gates as the Meta channel (see main._telegram_callback)."""
     resp = client.get(
         _api("getUpdates"),
         params={"timeout": TELEGRAM_POLL_TIMEOUT, "offset": offset,
-                "allowed_updates": ["message"]})
+                "allowed_updates": ["message", "callback_query"]})
     resp.raise_for_status()
     for update in resp.json().get("result") or []:
         offset = max(offset, int(update["update_id"]) + 1)
+        cbq = update.get("callback_query")
+        if cbq:
+            from FareBeep.main import _telegram_callback
+            _telegram_callback(str(cbq.get("id") or ""),
+                               str(((cbq.get("message") or {})
+                                    .get("chat") or {}).get("id") or ""),
+                               str(cbq.get("data") or ""))
+            continue
         msg = update.get("message") or {}
         chat_id = str((msg.get("chat") or {}).get("id") or "")
         text = str(msg.get("text") or "")

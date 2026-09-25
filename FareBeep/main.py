@@ -572,21 +572,7 @@ def _dispatch_single(msg) -> None:
         tap_id = msg.button_id or msg.list_id or ""
         if not tap_id:
             return
-        tap = cards.translate_tap(tap_id)
-        if tap is None:
-            logger.warning("Meta tap ignored: unknown button id %r", tap_id)
-            return
-        if tap[0] == "alert":
-            _tap_alert_by_phone(phone, tap[1])
-            return
-        if tap[0] == "beep":
-            _tap_beep_by_phone(phone, tap[1])
-            return
-        if tap[0] == "set_beep":
-            _send_beep_flow(phone)
-            return
-        _handle_incoming_message(
-            phone, str(tap[1]) if tap[0] == "pick" else "BOOK")
+        _dispatch_tap(phone, tap_id, source="meta")
         return
     if msg.message_type == MessageType.DOCUMENT:
         _handle_boarding_pass(phone, msg)
@@ -696,6 +682,11 @@ def _send_beep_flow(phone: str) -> None:
     """Offer the WhatsApp Flow (Meta-hosted structured screens). Without
     BEEP_FLOW_ID - or on a non-Meta channel - degrade to the guided
     TRACK path so the button never dead-ends."""
+    if MESSAGING_PROVIDER.lower() == "telegram":
+        # The Meta-hosted Flow cannot open in a Telegram chat - go
+        # straight to the guided TRACK path (no futile Meta API call).
+        _handle_incoming_message(phone, "TRACK")
+        return
     try:
         sent = MetaWhatsapp().send_flow(
             phone, flow_cta="Set my beep",
@@ -707,6 +698,41 @@ def _send_beep_flow(phone: str) -> None:
         sent = False
     if not sent:
         _handle_incoming_message(phone, "TRACK")
+
+
+def _dispatch_tap(phone: str, tap_id: str, source: str = "meta") -> None:
+    """Route one fare-card button tap to its handler.
+
+    Shared by the Meta webhook AND Telegram callback_query: both channels
+    emit the SAME ids (pick:N / alert:N / beep:N / set_beep / book), so
+    cards.translate_tap stays the single parser and every channel rides
+    the same tested gates (pick gate, _tap_alert, _tap_beep, the guided
+    TRACK fallback)."""
+    tap = cards.translate_tap(tap_id)
+    if tap is None:
+        logger.warning("%s tap ignored: unknown button id %r", source, tap_id)
+        return
+    if tap[0] == "alert":
+        _tap_alert_by_phone(phone, tap[1])
+        return
+    if tap[0] == "beep":
+        _tap_beep_by_phone(phone, tap[1])
+        return
+    if tap[0] == "set_beep":
+        _send_beep_flow(phone)
+        return
+    _handle_incoming_message(
+        phone, str(tap[1]) if tap[0] == "pick" else "BOOK")
+
+
+def _telegram_callback(cb_id: str, chat_id: str, data: str) -> None:
+    """A fare-card button tap from Telegram: stop the button spinner,
+    then run the SAME tap gates the Meta cards use. Own background-task
+    session discipline as every _handle_incoming_message turn."""
+    if cb_id:
+        notifier.answer_callback(cb_id)
+    if data and chat_id:
+        _dispatch_tap(chat_id, data, source="telegram")
 
 
 def _handle_flow_completion(phone: str, token: str, data: dict) -> None:
@@ -2682,6 +2708,17 @@ async def telegram_webhook(request: Request, background: BackgroundTasks):
         return Response(status_code=403)
 
     update = await request.json()
+    # Button taps arrive as callback_query updates (inline keyboards).
+    # Route them through the SAME gates as Meta button_reply taps.
+    cbq = update.get("callback_query") or {}
+    if cbq:
+        cb_id = str(cbq.get("id") or "")
+        data = str(cbq.get("data") or "")
+        cb_chat = str(((cbq.get("message") or {}).get("chat") or {})
+                      .get("id") or "")
+        if cb_id:
+            background.add_task(_telegram_callback, cb_id, cb_chat, data)
+        return {"ok": True}
     message = update.get("message") or {}
     chat = message.get("chat") or {}
     chat_id = str(chat.get("id") or "")

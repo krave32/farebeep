@@ -455,6 +455,7 @@ class _FlowSpy:
 
 def test_set_beep_tap_offers_flow(client, monkeypatch):
     _FlowSpy.reset()
+    monkeypatch.setattr(main, "MESSAGING_PROVIDER", "meta")  # flow is Meta-only
     monkeypatch.setattr(main, "MetaWhatsapp", _FlowSpy)
     main._send_beep_flow("+2348010000001")
     to, cta, token = _FlowSpy.calls[-1]

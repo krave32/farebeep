@@ -322,6 +322,62 @@ class TelegramBot:
         except Exception:
             return False
 
+    def send_interactive_card(self, to: str, body: str, buttons: list,
+                              image_url: str = None,
+                              footer: str = None) -> bool:
+        """Fare card for Telegram: optional airline-logo photo + body
+        text + up to 3 inline keyboard buttons.
+
+        buttons = [(button_id, title), ...] - the SAME tap ids the Meta
+        cards emit (pick:N / alert:N / book), so callback routing reuses
+        cards.translate_tap and the tested pick/alert gates unchanged.
+        Titles are clipped to 64 chars (Telegram's per-button limit).
+        The logo rides as sendPhoto's caption (photo albums can't carry
+        keyboards); a card without a logo degrades to sendMessage with
+        reply_markup. Best-effort like every transport: returns False
+        on failure, never raises."""
+        if not self._ready:
+            logger.warning("TELEGRAM_BOT_TOKEN not set - card NOT sent to %s",
+                           to)
+            return False
+        keyboard = [[{"text": str(title)[:64], "callback_data": str(bid)}]
+                    for bid, title in (buttons or [])[:3]]
+        markup = {"inline_keyboard": keyboard}
+        try:
+            if image_url:
+                resp = self._http.post(
+                    self._api_url("sendPhoto"),
+                    json={"chat_id": to, "photo": image_url,
+                          "caption": body[:1024],
+                          "reply_markup": markup})
+            else:
+                resp = self._http.post(
+                    self._api_url("sendMessage"),
+                    json={"chat_id": to, "text": body,
+                          "reply_markup": markup})
+            resp.raise_for_status()
+            ok = bool(resp.json().get("ok"))
+            logger.info("Telegram card sent to %s (ok=%s)", to, ok)
+            return ok
+        except Exception as e:
+            logger.error("Telegram card failed to %s: %s", to, e)
+            return False
+
+    def answer_callback(self, callback_id: str, text: str = None) -> bool:
+        """Acknowledge a callback_query (stops the button spinner) and
+        optionally toast a short confirmation. Best-effort."""
+        if not self._ready or not callback_id:
+            return False
+        payload = {"callback_query_id": callback_id}
+        if text:
+            payload["text"] = text[:200]
+        try:
+            resp = self._http.post(
+                self._api_url("answerCallbackQuery"), json=payload)
+            return bool(resp.json().get("ok"))
+        except Exception:
+            return False
+
     def send_template(self, to: str, template_name: str,
                       body_parameters: list = None,
                       language: str = "en_US",

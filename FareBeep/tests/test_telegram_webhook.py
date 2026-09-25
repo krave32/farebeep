@@ -56,9 +56,14 @@ def client(monkeypatch, session_factory):
     class FakeNotifier:
         def __init__(self):
             self.sent = []
+            self.acks = []
 
         def send_text(self, to, body):
             self.sent.append((to, body))
+            return True
+
+        def answer_callback(self, callback_id, text=None):
+            self.acks.append((callback_id, text))
             return True
 
     fake = FakeNotifier()
@@ -95,11 +100,14 @@ def test_telegram_receiver_rejects_bad_secret(client):
 
 
 def test_telegram_receiver_ignores_non_message_updates(client):
+    """callback_query updates are ACKed but (with no message.chat and no
+    data) dispatch nothing - the ack still goes out via answer_callback."""
     test_client, fake = client
     r = _tg_post(test_client, "/webhook/telegram",
                  {"update_id": 1, "callback_query": {"id": "x"}})
     assert r.status_code == 200
     assert fake.sent == []
+    assert fake.acks == [("x", None)]
 
 
 def test_telegram_send_text_calls_sendMessage(monkeypatch):

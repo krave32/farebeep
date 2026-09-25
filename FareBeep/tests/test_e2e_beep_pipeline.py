@@ -102,6 +102,7 @@ def session_factory():
 @pytest.fixture
 def client(monkeypatch, session_factory):
     _MetaSpy.reset()
+    monkeypatch.setattr(main, "MESSAGING_PROVIDER", "meta")  # Meta-channel E2E
     monkeypatch.setattr(main, "META_APP_SECRET", "test-app-secret")
     monkeypatch.setattr(main, "SessionLocal", session_factory)
     monkeypatch.setattr(main, "MetaWhatsapp", _MetaSpy)

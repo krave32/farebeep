@@ -74,6 +74,12 @@ def _hermetic_network(monkeypatch):
         def send_action(self, to, action="typing"):
             return True
 
+        def send_interactive_card(self, to, body, buttons, **k):
+            return True
+
+        def answer_callback(self, callback_id, text=None):
+            return True
+
     monkeypatch.setattr(notifier_mod, "TelegramBot", _NullTelegram)
 
     # Meta Cloud API: the webhook receiver fires a best-effort typing
