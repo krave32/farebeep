@@ -126,6 +126,45 @@ def test_webhook_after_expiry_triggers_refund_required(db, user):
     assert created["session"].paid_at is None
 
 
+def test_webhook_expiry_gate_survives_aware_postgres_rows(db, user):
+    """REGRESSION (live smoke 25 Sep 2026): Postgres timestamptz reads back
+    timezone-AWARE while utcnow() is naive - the naive-vs-aware comparison
+    crashed the webhook with TypeError before any settle outcome. Both
+    sides must be normalized so the gate works on Supabase AND SQLite
+    (SQLite returns naive, which is why the suite missed it)."""
+    from datetime import timezone
+
+    clock = [utcnow()]
+    svc = BookingService(db, ttl_minutes=10, clock=lambda: clock[0])
+    created = svc.create_booking(user.user_id, "LOS", "ABV", "2026-08-21",
+                                 90000.0)
+
+    # Simulate the Postgres round-trip: expires_at comes back aware.
+    session = created["session"]
+    session.expires_at = session.expires_at.replace(
+        tzinfo=timezone.utc)
+    db.commit()
+
+    # On-time webhook (clock still inside the 10-minute window).
+    outcome = svc.settle_payment(session.payment_ref, "success")
+    assert outcome["outcome"] == "paid"
+    assert session.status == SessionStatus.PAID.value
+
+    # And the expired case with an aware row: the webhook lands 11
+    # minutes AFTER creation -> refund required.
+    clock[0] = clock[0] + timedelta(minutes=11)
+    created2 = BookingService(db, ttl_minutes=10,
+                              clock=lambda: clock[0]).create_booking(
+        user.user_id, "LOS", "ABV", "2026-08-22", 90000.0)
+    s2 = created2["session"]
+    s2.expires_at = s2.expires_at.replace(tzinfo=timezone.utc)
+    db.commit()
+    clock[0] = clock[0] + timedelta(minutes=11)   # webhook arrives late
+    outcome2 = svc.settle_payment(s2.payment_ref, "success")
+    assert outcome2["outcome"] == "refund_required"
+    assert s2.status == SessionStatus.EXPIRED.value
+
+
 def test_webhook_before_expiry_marks_paid_with_pnr(db, user):
     clock = [utcnow()]
     svc = BookingService(db, ttl_minutes=10, clock=lambda: clock[0])

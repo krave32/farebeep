@@ -1,5 +1,6 @@
 """TRAVELS247 CLIENT - JWT cache, search/pricing/reserve, retry policy."""
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -35,8 +36,13 @@ class _Script:
         self.calls = []
 
     def __call__(self, request):
+        try:
+            payload = request.read()
+        except Exception:
+            payload = b""
         self.calls.append((request.method, request.url.path,
-                           request.headers.get("authorization", "")))
+                           request.headers.get("authorization", ""),
+                           (json.loads(payload) if payload else {})))
         q = self.routes.get((request.method, request.url.path))
         assert q, f"unexpected Travels247 call {request.method} {request.url.path}"
         status, body = q.pop(0)
@@ -219,11 +225,36 @@ def test_reserve_returns_pnr():
                         "ticket_deadline": "2026-05-19 14:30:00"}}
     routes = {("POST", "/api/login"): [(200, LOGIN)],
               ("POST", "/api/flights/reserve"): [(200, reserve)]}
-    client, _ = _client(routes)
+    client, script = _client(routes)
     try:
         out = _run(client.reserve("btk_bbb", {"primary_guest": {}}))
         assert out["pnr"] == "ABC123"
         assert out["status"] == "confirmed"
+        # An explicit primary_guest dict passes through untouched.
+        reserve_call = next(c for c in script.calls
+                            if c[1] == "/api/flights/reserve")
+        assert reserve_call[3]["travellers"] == {"primary_guest": {}}
+    finally:
+        _run(client.close())
+
+
+def test_reserve_wraps_flat_traveller_in_primary_guest():
+    """REGRESSION (live smoke 25 Sep 2026): the vendor rejected a flat
+    traveller dict with "travellers.primary_guest is required" - the
+    client wraps it so callers never learn the wire shape."""
+    reserve = {"success": True,
+               "data": {"pnr": "XYZ789", "status": "confirmed"}}
+    routes = {("POST", "/api/login"): [(200, LOGIN)],
+              ("POST", "/api/flights/reserve"): [(200, reserve)]}
+    client, script = _client(routes)
+    try:
+        out = _run(client.reserve("btk_bbb", {"first_name": "Smoke",
+                                              "last_name": "Test"}))
+        assert out["pnr"] == "XYZ789"
+        reserve_call = next(c for c in script.calls
+                            if c[1] == "/api/flights/reserve")
+        assert reserve_call[3]["travellers"] == {"primary_guest": {
+            "first_name": "Smoke", "last_name": "Test"}}
     finally:
         _run(client.close())
 

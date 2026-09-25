@@ -61,6 +61,19 @@ def _departure_for(flight_date: str, scheduled_departure=None):
     return d.replace(hour=DEFAULT_DEPARTURE_HOUR)
 
 
+def _as_naive(ts: Optional[datetime]) -> Optional[datetime]:
+    """Strip tzinfo if present - the storage convention is naive UTC.
+
+    Postgres `timestamptz` reads back timezone-AWARE while utcnow() (and
+    every SQLite round-trip) is naive: comparing them raises
+    "can't compare offset-naive and offset-aware datetimes". The webhook
+    path hit this in production smoke-testing; normalize both sides so
+    the expiry gate works on either backend."""
+    if ts is not None and ts.tzinfo is not None:
+        return ts.replace(tzinfo=None)
+    return ts
+
+
 class BookingService:
     """Owns booking_session lifecycle: pending -> paid | expired | refund_flagged."""
 
@@ -166,7 +179,8 @@ class BookingService:
             return {"outcome": "already_paid", "session": session}  # idempotent
 
         # expired? -> EXPIRED + REFUND REQUIRED (no airline API call)
-        if now > session.expires_at:
+        # Both sides normalized to naive UTC (Postgres reads aware rows).
+        if _as_naive(now) > _as_naive(session.expires_at):
             session.status = SessionStatus.EXPIRED.value
             self.db.commit()
             logger.warning(
@@ -229,7 +243,7 @@ class BookingService:
         now = self.clock()
         stale = (self.db.query(BookingSession)
                  .filter(BookingSession.status == SessionStatus.PENDING.value,
-                         BookingSession.expires_at < now)
+                         BookingSession.expires_at < _as_naive(now))
                  .all())
         for s in stale:
             s.status = SessionStatus.EXPIRED.value

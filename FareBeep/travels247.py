@@ -266,11 +266,20 @@ class Travels247Client:
         UNCONDITIONAL: Travels247 tickets on every valid call, so this must
         only run AFTER Paystack confirms payment (ToS). Returns {pnr,
         booking_reference, carrier, status, ticket_deadline}.
+
+        Wire shape (verified live 25 Sep 2026): the vendor expects the
+        traveller under `travellers.primary_guest`; a flat
+        {first_name, last_name, ...} dict is accepted here and wrapped
+        automatically (the vendor rejected a flat dict with
+        "travellers.primary_guest is required").
         """
+        payload_travellers = travellers
+        if isinstance(travellers, dict) and "primary_guest" not in travellers:
+            payload_travellers = {"primary_guest": travellers}
         data = await self._request(
             "POST", "/flights/reserve",
             json={"booking_token": booking_token,
-                  "travellers": travellers,
+                  "travellers": payload_travellers,
                   "passengers": {"adults": adults, "children": children,
                                  "infants": infants},
                   "ticket_time_limit_hours": ticket_time_limit_hours})
