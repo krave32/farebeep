@@ -5,76 +5,104 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>FareBeep · Set a beep</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=Plus+Jakarta+Sans:ital,wght@0,500;0,700;0,800;1,800&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#17210b; --card:#1f2b10; --card2:#253315;
-    --lime:#b0c572; --olive:#697738; --muted:#a7b489; --white:#eef3e2;
-    --err:#e0806b; --ok:#9fca7d;
+    --bg:#0e3b2c; --bg-deep:#0a2e22; --card:#0f4433;
+    --fg:#eaf4e0; --white:#ffffff; --on-lime:#0a2c20;
+    --muted:#a9c9b1; --faint:#7ea98d;
+    --lime:#d8e95b; --lime-bright:#e6f574; --lime-soft:rgba(216,233,91,.13);
+    --line:#275844; --line-2:#38755a;
+    --err:#ff9a8a; --ok:#7fd6a4;
+    --sans:"Plus Jakarta Sans",system-ui,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,monospace;
+    --r-card:.85rem; --r-btn:.6rem;
   }
-  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent; margin:0; padding:0;}
   body{
-    margin:0; padding:16px 16px 32px; background:var(--bg); color:var(--white);
-    font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    min-height:100vh;
+    background:var(--bg); color:var(--fg); font-family:var(--sans);
+    line-height:1.55; -webkit-font-smoothing:antialiased;
+    padding:20px 18px max(34px, env(safe-area-inset-bottom)); min-height:100vh;
   }
-  .wrap{max-width:420px; margin:0 auto;}
-  .brand{display:flex; align-items:center; gap:10px; margin-bottom:18px;}
-  .brand .dot{width:34px;height:34px;border-radius:50%;
-    background:radial-gradient(circle at 32% 32%, #2a3814, #1a240d);
-    border:1.5px solid var(--olive); display:flex;align-items:center;justify-content:center;}
-  .brand .dot svg{width:20px;height:20px;}
-  .brand b{font-size:18px; letter-spacing:.2px;}
-  .brand b em{font-style:italic; color:var(--lime); font-family:Georgia,serif;}
-  .brand span{color:var(--muted); font-size:11px; display:block; margin-top:2px;
-    letter-spacing:2.5px; text-transform:uppercase;}
-  h1{font-size:20px; margin:6px 0 4px;}
-  .sub{color:var(--muted); font-size:13px; line-height:1.45; margin:0 0 18px;}
-  label{display:block; font-size:12px; color:var(--muted);
-    text-transform:uppercase; letter-spacing:1.5px; margin:14px 0 6px;}
+  .wrap{max-width:430px; margin:0 auto;}
+  .brand{display:flex; align-items:center; gap:9px; margin-bottom:22px;}
+  .brand .mark{width:30px; height:30px; color:var(--lime); display:block;
+    filter:drop-shadow(0 4px 9px rgba(216,233,91,.22));}
+  .brand .mark .logo-ping{fill:none; transform-box:fill-box; transform-origin:center;
+    animation:ping 2.4s cubic-bezier(0,.5,.4,1) infinite;}
+  @keyframes ping{
+    0%{transform:scale(.5); opacity:0;}
+    18%{opacity:.85;}
+    70%,100%{transform:scale(1.7); opacity:0;}
+  }
+  .wordmark{font-weight:800; font-size:19px; letter-spacing:-.02em; color:var(--fg);}
+  .wordmark b{color:var(--lime);}
+  .wordmark small{font-family:var(--mono); font-weight:600; font-size:.56rem;
+    letter-spacing:.1em; text-transform:uppercase; color:var(--faint);
+    margin-left:.55rem; display:inline-block;}
+  h1{font-size:21px; font-weight:800; margin:4px 0 5px; letter-spacing:-.01em;}
+  .sub{color:var(--muted); font-size:13.5px; line-height:1.5; margin:0 0 20px;}
+  label{display:block; font-family:var(--mono); font-size:.64rem; font-weight:600;
+    color:var(--muted); text-transform:uppercase; letter-spacing:.1em;
+    margin:15px 2px 6px;}
   select,input[type=date],input[type=number]{
-    width:100%; padding:13px 12px; border-radius:12px; border:1.5px solid var(--olive);
-    background:var(--card); color:var(--white); font-size:16px; outline:none;
+    width:100%; padding:13px 13px; border-radius:var(--r-btn);
+    border:1px solid var(--line-2); background:var(--bg-deep); color:var(--fg);
+    font-family:var(--sans); font-size:16px; outline:none;
     -webkit-appearance:none; appearance:none;}
-  select:focus,input:focus{border-color:var(--lime);}
-  input[type=number]::placeholder{color:#5d6b3e;}
-  .row{display:flex; gap:10px;}
-  .row>div{flex:1;}
-  .swap{align-self:flex-end; margin:0 0 10px; width:42px; height:42px; border-radius:50%;
-    border:1.5px solid var(--olive); background:var(--card2); color:var(--lime);
-    font-size:17px; flex:0 0 42px;}
-  .hint{font-size:12px; color:var(--muted); margin:8px 2px 0;}
-  .dropwatch{display:flex; gap:10px; align-items:center; margin-top:14px;
-    background:var(--card); border:1.5px solid var(--olive); border-radius:12px;
-    padding:12px;}
-  .dropwatch input{width:20px;height:20px; accent-color:var(--lime);}
-  .dropwatch label{margin:0; text-transform:none; letter-spacing:0;
-    font-size:14px; color:var(--white); display:block;}
-  .dropwatch small{display:block; color:var(--muted); font-size:12px; margin-top:2px;}
-  .cta{width:100%; margin-top:22px; padding:15px; border:none; border-radius:14px;
-    background:var(--lime); color:#1a240d; font-size:16px; font-weight:700;
-    letter-spacing:.3px;}
-  .cta:disabled{opacity:.55;}
-  .msg{display:none; margin-top:16px; padding:13px; border-radius:12px;
+  select:focus-visible,input:focus-visible,button:focus-visible{
+    outline:2px solid var(--lime); outline-offset:2px;
+  }
+  select:focus,input:focus{border-color:var(--lime); box-shadow:0 0 0 2px var(--lime-soft);}
+  input[type=number]::placeholder{color:var(--faint);}
+  select{
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1.5 6 6.5 11 1.5' stroke='%23d8e95b' stroke-width='1.8' fill='none' stroke-linecap='round'/></svg>");
+    background-repeat:no-repeat; background-position:right 14px center;
+    padding-right:36px;}
+  .swap{display:block; margin:9px auto 2px; width:40px; height:40px;
+    border-radius:50%; border:1px solid var(--line-2); background:var(--card);
+    color:var(--lime); font-size:16px; cursor:pointer;}
+  .swap:active{border-color:var(--lime);}
+  .swap:hover{background:var(--line);}
+  .dropwatch{display:flex; gap:11px; align-items:center; margin-top:17px;
+    background:var(--card); border:1px solid var(--line); border-radius:var(--r-card);
+    padding:13px;}
+  .dropwatch input{width:20px; height:20px; accent-color:var(--lime); flex:0 0 20px;}
+  .dropwatch label{margin:0; font-family:var(--sans); font-size:14px; font-weight:700;
+    color:var(--fg); text-transform:none; letter-spacing:0;}
+  .dropwatch small{display:block; font-family:var(--sans); font-weight:500;
+    color:var(--muted); font-size:12px; margin-top:2px; line-height:1.4;}
+  .cta{width:100%; margin-top:24px; padding:15px; border:none;
+    border-radius:var(--r-btn); background:var(--lime); color:var(--on-lime);
+    font-family:var(--sans); font-size:15.5px; font-weight:800;
+    letter-spacing:.01em; cursor:pointer;
+    box-shadow:0 8px 22px rgba(216,233,91,.25);}
+  .cta:disabled{opacity:.55; cursor:wait;}
+  .cta:active{background:var(--lime-bright);}
+  .msg{display:none; margin-top:15px; padding:13px; border-radius:var(--r-card); overflow-wrap:anywhere;
     font-size:14px; line-height:1.5;}
-  .msg.ok{display:block; background:var(--card2); border:1.5px solid var(--ok); color:var(--ok);}
-  .msg.err{display:block; background:var(--card2); border:1.5px solid var(--err); color:var(--err);}
-  .foot{margin-top:20px; text-align:center; color:#5d6b3e; font-size:11px;
-    letter-spacing:2px; text-transform:uppercase;}
+  .msg.ok{display:block; background:var(--lime-soft); border:1px solid var(--ok);
+    color:var(--ok);}
+  .msg.err{display:block; background:rgba(255,154,138,.1); border:1px solid var(--err);
+    color:var(--err);}
+  .foot{margin-top:22px; text-align:center; font-family:var(--mono); font-size:.6rem;
+    font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--faint);}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="brand">
-    <div class="dot">
-      <svg viewBox="0 0 100 100" fill="none">
-        <path d="M 16 52 A 26 26 0 1 0 74 40" stroke="#b0c572" stroke-width="7" stroke-linecap="round"/>
-        <path d="M 30 52 A 13 13 0 1 0 56 46" stroke="#b0c572" stroke-width="6" stroke-linecap="round"/>
-        <line x1="32" y1="72" x2="72" y2="32" stroke="#b0c572" stroke-width="5" stroke-linecap="round"/>
-        <circle cx="79" cy="26" r="8" fill="#b0c572"/>
-        <path d="M 38 50 L 58 44 L 48 56 L 46 52 Z" fill="#eef3e2"/>
-      </svg>
-    </div>
-    <div><b><em>Fare</em>Beep</b><span>Price radar</span></div>
+    <svg class="mark" viewBox="0 0 100 100" fill="none" aria-hidden="true">
+      <path d="M61.2 30.8 A30 30 0 1 0 61.2 73.2" stroke="currentColor" stroke-width="8" stroke-linecap="round"/>
+      <path d="M52.7 39.3 A18 18 0 1 0 52.7 64.7" stroke="currentColor" stroke-width="8" stroke-linecap="round"/>
+      <path d="M30 76 L74 30" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+      <path d="M34 51 L60 42 L46 58 L44 52 Z" fill="#eaf4e0" stroke="#0e3b2c" stroke-width="1.6" stroke-linejoin="round"/>
+      <circle class="logo-ping" cx="80" cy="24" r="9" stroke="currentColor" stroke-width="2"/>
+      <circle cx="80" cy="24" r="9" fill="currentColor"/>
+    </svg>
+    <span class="wordmark">Fare<b>Beep</b><small>Price radar</small></span>
   </div>
 
   <h1>Set a beep 🎯</h1>
@@ -82,26 +110,27 @@
      message the moment it drops (or hits your target).</p>
 
   <form id="f">
-    <label>From</label>
-    <select id="origin" required></select>
-    <button type="button" class="swap" id="swap" title="Swap">⇅</button>
-    <label>To</label>
-    <select id="destination" required></select>
+    <label for="origin">From</label>
+    <select id="origin" name="origin" autocomplete="off" required></select>
+    <button type="button" class="swap" id="swap" title="Swap origin and destination" aria-label="Swap origin and destination">⇅</button>
+    <label for="destination">To</label>
+    <select id="destination" name="destination" autocomplete="off" required></select>
 
-    <label>Travel date <span style="text-transform:none;letter-spacing:0">(optional)</span></label>
-    <input type="date" id="date">
+    <label for="date">Travel date <span style="text-transform:none;letter-spacing:0">(optional)</span></label>
+    <input type="date" id="date" name="departure_date">
 
     <div class="dropwatch">
-      <input type="checkbox" id="dw" checked>
+      <input type="checkbox" id="dw" name="dropwatch" checked>
       <label for="dw">Any genuine drop<small>Beep when the fare falls meaningfully below its recent level</small></label>
     </div>
 
-    <label>Or beep at a target (₦)</label>
-    <input type="number" id="target" inputmode="numeric" min="1000" step="100"
-           placeholder="e.g. 90000">
+    <label for="target">Or beep at a target (₦)</label>
+    <input type="number" id="target" name="target_price" inputmode="numeric" min="1000" step="100"
+           placeholder="e.g. 90000" aria-describedby="target-hint">
+    <div class="hint" id="target-hint" style="color:var(--muted);font-size:12px;margin:6px 2px 0">Leave blank to watch for genuine fare drops instead.</div>
 
     <button class="cta" id="go" type="submit">Arm the beep 🔔</button>
-    <div class="msg" id="msg"></div>
+    <div class="msg" id="msg" role="status" aria-live="polite"></div>
   </form>
 
   <div class="foot">FareBeep · verified just now</div>
@@ -121,6 +150,8 @@ const sel = (id, def) => {
     `<option value="${c}" ${c===def?"selected":""}>${n}</option>`).join("");
 };
 sel("origin","LOS"); sel("destination","ABV");
+const today = new Date();
+$("date").min = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
 
 $("swap").onclick = () => {
   const o=$("origin").value; $("origin").value=$("destination").value;
@@ -128,11 +159,14 @@ $("swap").onclick = () => {
 };
 
 const tg = window.Telegram?.WebApp;
-if (tg) { tg.ready(); tg.expand(); tg.setHeaderColor("#17210b"); tg.setBackgroundColor("#17210b"); }
+if (tg) {
+  tg.ready(); tg.expand();
+  tg.setHeaderColor("#0e3b2c"); tg.setBackgroundColor("#0e3b2c");
+}
 
 $("f").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const msg = $("msg"); msg.className="msg"; msg.style.display="none";
+  const msg = $("msg"); msg.className="msg"; msg.textContent=""; msg.style.display="none";
   const btn = $("go"); btn.disabled = true; btn.textContent = "Arming…";
   const dropwatch = $("dw").checked && !$("target").value;
   const body = {
@@ -150,17 +184,24 @@ $("f").addEventListener("submit", async (e) => {
     const data = await r.json();
     if (!r.ok || !data.ok) throw new Error(data.error || "Could not arm the beep");
     msg.className="msg ok";
-    msg.textContent = "✅ " + data.summary;
+    msg.style.display="";
+    msg.textContent = "✅ " + data.summary + (data.realism_warning ? ` ${data.realism_warning}` : "");
     $("go").textContent = "Armed ✓";
     if (tg) tg.HapticFeedback?.notificationOccurred("success");
     setTimeout(() => tg?.close(), 1600);
   } catch (err) {
     msg.className="msg err";
+    msg.style.display="";
     msg.textContent = err.message || "Something went wrong - try again.";
     btn.disabled = false; btn.textContent = "Arm the beep 🔔";
     tg?.HapticFeedback?.notificationOccurred("error");
   }
 });
 </script>
+<style>
+  @media(prefers-reduced-motion:reduce){
+    *,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;}
+  }
+</style>
 </body>
 </html>
